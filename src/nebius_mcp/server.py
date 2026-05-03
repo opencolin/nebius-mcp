@@ -35,9 +35,11 @@ def _build_app() -> FastMCP:
 
 
 def _register_tools(app: FastMCP) -> None:
-    from .tools import ops
+    from .tools import compute, iam, ops
 
     ops.register(app)
+    iam.register(app)
+    compute.register(app)
 
 
 def is_write_mode() -> bool:
