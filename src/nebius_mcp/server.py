@@ -30,6 +30,9 @@ def _build_app() -> FastMCP:
         instructions=INSTRUCTIONS,
         website_url="https://github.com/opencolin/nebius-mcp",
     )
+    from .audit import make_middleware
+
+    app.add_middleware(make_middleware())
     _register_tools(app)
     return app
 

@@ -25,6 +25,13 @@ async def test_manifest_includes_all_registered_tools() -> None:
     assert "registry_list" in names
     assert "secrets_list" in names
     assert "get_manifest" in names
+    # Destructive coverage spot-checks
+    assert "compute_delete_instance" in names
+    assert "compute_create_instance" in names
+    assert "k8s_delete_cluster" in names
+    assert "ai_delete_endpoint" in names
+    assert "vpc_delete_network" in names
+    assert "registry_delete" in names
 
 
 @pytest.mark.asyncio
@@ -40,7 +47,7 @@ async def test_manifest_summary_includes_hash() -> None:
     assert "sha256" in summary
     assert len(summary["sha256"]) == 64  # SHA-256 hex
     assert "tools" in summary
-    assert summary["tool_count"] >= 30
+    assert summary["tool_count"] >= 50
 
 
 @pytest.mark.asyncio

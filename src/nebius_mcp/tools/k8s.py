@@ -19,6 +19,7 @@ from ..client import service
 from ..errors import safe
 from ..pagination import clamp_page_size
 from ..sanitize import safe_proto, wrap
+from ._ops_helpers import register_delete_tool
 
 READ_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -179,3 +180,28 @@ def register(app: FastMCP) -> None:
         )
         items = [safe_proto(it) for it in (resp.items or [])]
         return wrap({"items": items})
+
+    from nebius.api.nebius.mk8s.v1 import (
+        ClusterServiceClient,
+        DeleteClusterRequest,
+        DeleteNodeGroupRequest,
+        NodeGroupServiceClient,
+    )
+
+    register_delete_tool(
+        app,
+        tool_name="k8s_delete_cluster",
+        resource_label="managed Kubernetes cluster",
+        client_cls=ClusterServiceClient,
+        request_cls=DeleteClusterRequest,
+        id_description="Cluster ID, e.g. 'mk8scluster-...'.",
+        extra_description="Deletes the cluster and all its node-groups.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="k8s_delete_node_group",
+        resource_label="node group",
+        client_cls=NodeGroupServiceClient,
+        request_cls=DeleteNodeGroupRequest,
+        id_description="Node-group ID.",
+    )

@@ -21,6 +21,7 @@ from ..client import service
 from ..errors import safe
 from ..pagination import clamp_page_size
 from ..sanitize import safe_proto, wrap
+from ._ops_helpers import register_delete_tool, register_state_tool
 
 READ_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -111,3 +112,39 @@ def register(app: FastMCP) -> None:
             client.get_by_name(GetEndpointByNameRequest(parent_id=parent_id, name=name))
         )
         return wrap(safe_proto(resp))
+
+    from nebius.api.nebius.ai.v1 import (
+        DeleteEndpointRequest,
+        StartEndpointRequest,
+        StopEndpointRequest,
+    )
+    from nebius.api.nebius.ai.v1 import (
+        EndpointServiceClient as _EndpointServiceClient,
+    )
+
+    register_state_tool(
+        app,
+        tool_name="ai_start_endpoint",
+        description="Start a stopped AI Endpoint. Reversible; gated by write mode.",
+        client_cls=_EndpointServiceClient,
+        request_cls=StartEndpointRequest,
+        method_name="start",
+        id_description="Endpoint ID.",
+    )
+    register_state_tool(
+        app,
+        tool_name="ai_stop_endpoint",
+        description="Stop a running AI Endpoint. Reversible; gated by write mode.",
+        client_cls=_EndpointServiceClient,
+        request_cls=StopEndpointRequest,
+        method_name="stop",
+        id_description="Endpoint ID.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="ai_delete_endpoint",
+        resource_label="AI Endpoint",
+        client_cls=_EndpointServiceClient,
+        request_cls=DeleteEndpointRequest,
+        id_description="Endpoint ID.",
+    )

@@ -21,6 +21,7 @@ from ..client import service
 from ..errors import safe
 from ..pagination import clamp_page_size
 from ..sanitize import safe_proto, wrap
+from ._ops_helpers import register_delete_tool
 
 READ_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -139,3 +140,32 @@ def register(app: FastMCP) -> None:
         client = service(ArtifactServiceClient)
         resp = await safe(client.get(GetArtifactRequest(id=id)))
         return wrap(safe_proto(resp))
+
+    from nebius.api.nebius.registry.v1 import (
+        ArtifactServiceClient as _ArtifactServiceClient,
+    )
+    from nebius.api.nebius.registry.v1 import (
+        DeleteArtifactRequest,
+        DeleteRegistryRequest,
+    )
+    from nebius.api.nebius.registry.v1 import (
+        RegistryServiceClient as _RegistryServiceClient,
+    )
+
+    register_delete_tool(
+        app,
+        tool_name="registry_delete",
+        resource_label="container registry",
+        client_cls=_RegistryServiceClient,
+        request_cls=DeleteRegistryRequest,
+        id_description="Registry ID.",
+        extra_description="Fails if the registry still has artifacts.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="registry_delete_image",
+        resource_label="container image (artifact)",
+        client_cls=_ArtifactServiceClient,
+        request_cls=DeleteArtifactRequest,
+        id_description="Artifact ID.",
+    )

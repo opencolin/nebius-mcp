@@ -18,6 +18,7 @@ from ..client import service
 from ..errors import safe
 from ..pagination import clamp_page_size
 from ..sanitize import safe_proto, wrap
+from ._ops_helpers import register_delete_tool
 
 READ_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -222,3 +223,56 @@ def register(app: FastMCP) -> None:
         client = service(AllocationServiceClient)
         resp = await safe(client.get(GetAllocationRequest(id=id)))
         return wrap(safe_proto(resp))
+
+    from nebius.api.nebius.vpc.v1 import (
+        AllocationServiceClient as _AllocationServiceClient,
+    )
+    from nebius.api.nebius.vpc.v1 import (
+        DeleteAllocationRequest,
+        DeleteNetworkRequest,
+        DeleteSecurityGroupRequest,
+        DeleteSubnetRequest,
+    )
+    from nebius.api.nebius.vpc.v1 import (
+        NetworkServiceClient as _NetworkServiceClient,
+    )
+    from nebius.api.nebius.vpc.v1 import (
+        SecurityGroupServiceClient as _SecurityGroupServiceClient,
+    )
+    from nebius.api.nebius.vpc.v1 import (
+        SubnetServiceClient as _SubnetServiceClient,
+    )
+
+    register_delete_tool(
+        app,
+        tool_name="vpc_delete_network",
+        resource_label="VPC network",
+        client_cls=_NetworkServiceClient,
+        request_cls=DeleteNetworkRequest,
+        id_description="Network ID.",
+        extra_description="Fails if subnets still exist in the network.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="vpc_delete_subnet",
+        resource_label="VPC subnet",
+        client_cls=_SubnetServiceClient,
+        request_cls=DeleteSubnetRequest,
+        id_description="Subnet ID.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="vpc_delete_security_group",
+        resource_label="VPC security group",
+        client_cls=_SecurityGroupServiceClient,
+        request_cls=DeleteSecurityGroupRequest,
+        id_description="Security-group ID.",
+    )
+    register_delete_tool(
+        app,
+        tool_name="vpc_delete_allocation",
+        resource_label="VPC IP allocation",
+        client_cls=_AllocationServiceClient,
+        request_cls=DeleteAllocationRequest,
+        id_description="Allocation ID.",
+    )
