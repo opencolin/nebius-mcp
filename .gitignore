@@ -9,6 +9,7 @@ __pycache__/
 .Python
 build/
 dist/
+.mcp-config.local.json
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
