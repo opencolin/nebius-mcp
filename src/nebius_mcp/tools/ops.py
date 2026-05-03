@@ -11,7 +11,7 @@ from __future__ import annotations
 import platform
 import sys
 from importlib.metadata import PackageNotFoundError, version
-from typing import Literal
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -142,3 +142,23 @@ def register(app: FastMCP) -> None:
     )
     def check_environment() -> EnvironmentReport:
         return _build_report()
+
+    @app.tool(
+        name="get_manifest",
+        description=(
+            "Return a SHA-256 hash and full listing of every tool this server "
+            "exposes (name, description, annotations, input schema). Use this to "
+            "detect whether the tool surface has been tampered with between "
+            "sessions — pin the sha256 in your environment and compare. Read-only."
+        ),
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    async def get_manifest() -> dict[str, Any]:
+        from ..manifest import manifest_summary
+
+        return await manifest_summary(app)
