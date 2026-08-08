@@ -39,6 +39,14 @@ class CredentialSummary(BaseModel):
         default=None,
         description="Set when the config file exists but could not be parsed.",
     )
+    profile_problem: str | None = Field(
+        default=None,
+        description=(
+            "Set when the active profile parses but cannot produce credentials "
+            "(for example auth-type 'federation' with no federation-id). When "
+            "this is set, every tool that calls Nebius will fail."
+        ),
+    )
 
 
 class EnvironmentReport(BaseModel):
@@ -78,9 +86,14 @@ def _build_report() -> EnvironmentReport:
         parent_id=snap.parent_id,
         endpoint=snap.endpoint,
         config_parse_error=snap.error,
+        profile_problem=snap.profile_problem,
     )
 
     next_steps: list[str] = []
+    if snap.profile_problem:
+        next_steps.append(
+            f"Active profile '{snap.active_profile}' cannot authenticate: {snap.profile_problem}"
+        )
     if not snap.has_any:
         next_steps.extend(
             [

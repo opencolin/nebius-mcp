@@ -45,10 +45,25 @@ class CredentialResolution:
     parent_id: str | None
     endpoint: str | None
     error: str | None  # populated when the config file exists but couldn't be parsed
+    profile_problem: str | None = None
+    """Set when the active profile exists but cannot produce credentials.
+
+    A profile being *present* is not the same as it being *usable*: a
+    ``federation`` profile with no ``federation-id``, or a service-account
+    profile missing its key, parses fine and then fails on the first API call.
+    Reporting only presence gives false confidence at exactly the moment
+    someone is trying to work out why every tool errors.
+    """
 
     @property
     def has_any(self) -> bool:
-        return self.iam_token_env or (self.config_file_exists and self.active_profile is not None)
+        if self.iam_token_env:
+            return True
+        return (
+            self.config_file_exists
+            and self.active_profile is not None
+            and self.profile_problem is None
+        )
 
 
 def resolve_credentials(
@@ -72,6 +87,7 @@ def resolve_credentials(
     parent_id: str | None = None
     endpoint: str | None = None
     error: str | None = None
+    profile_problem: str | None = None
 
     if cfg_exists:
         try:
@@ -85,6 +101,11 @@ def resolve_credentials(
                 p = profiles[active_profile] or {}
                 parent_id = p.get("parent-id") or None
                 endpoint = p.get("endpoint") or cfg.get("endpoint") or None
+                profile_problem = _profile_problem(p)
+            elif active_profile:
+                profile_problem = f"profile {active_profile!r} is not defined in the config file"
+            else:
+                profile_problem = "no default profile is set in the config file"
         except Exception as exc:
             error = f"failed to parse {cfg_path}: {exc!s}"
 
@@ -97,7 +118,41 @@ def resolve_credentials(
         parent_id=parent_id,
         endpoint=endpoint,
         error=error,
+        profile_problem=profile_problem,
     )
+
+
+def _profile_problem(profile: Mapping[str, object]) -> str | None:
+    """Report why a profile cannot produce credentials, or None if it looks usable.
+
+    Mirrors the fields ``nebius.aio.cli_config.Config`` requires. Catching this
+    here turns a first-tool-call ``ConfigError`` into an answer from
+    ``check_environment``, which is where someone debugging will look.
+    """
+    auth_type = str(profile.get("auth-type") or "").strip().lower()
+
+    if auth_type in {"federation", "federated"}:
+        if not profile.get("federation-id"):
+            return (
+                "auth-type is 'federation' but the profile has no 'federation-id'. "
+                "Run `nebius iam login` to rewrite the profile, or set NEBIUS_IAM_TOKEN."
+            )
+        return None
+
+    # The CLI has written this key both ways over time; accept either spelling.
+    if auth_type in {"service account", "service-account"}:
+        missing = [
+            key
+            for key in ("service-account-id", "public-key-id", "private-key-file-path")
+            if not profile.get(key)
+        ]
+        if missing:
+            return f"auth-type is '{auth_type}' but the profile is missing: {', '.join(missing)}."
+        return None
+
+    # Any other auth-type (including absent) is left to the SDK. Only flag what
+    # has been confirmed to fail, so this never blocks a working setup.
+    return None
 
 
 _sdk_lock = threading.Lock()
@@ -107,10 +162,18 @@ _sdk_instance: SDK | None = None
 def get_sdk() -> SDK:
     """Return a singleton, configured Nebius ``SDK``.
 
-    Raises :class:`AuthError` if no credential source is present. The SDK is
-    constructed with no explicit credentials, letting its built-in ``Config``
-    apply the same precedence (env token > profile > default) we report from
-    :func:`resolve_credentials`.
+    Raises :class:`AuthError` if no credential source is present or the active
+    profile cannot produce credentials.
+
+    The SDK must be built with an explicit ``config_reader``. A bare ``SDK()``
+    does *not* read ``~/.nebius/config.yaml`` — it falls back to ``EnvBearer``
+    and fails with ``NoTokenInEnvError`` unless ``NEBIUS_IAM_TOKEN`` is set.
+    That silently breaks precedence rules 2 and 3 (``NEBIUS_PROFILE`` and the
+    config file), which is the setup the ``nebius`` CLI produces and the one
+    most users have.
+
+    ``Config`` implements the whole precedence itself, including the env token,
+    so this single path covers all three documented sources.
     """
     global _sdk_instance
     cached = _sdk_instance
@@ -122,12 +185,40 @@ def get_sdk() -> SDK:
             return _sdk_instance
 
         snapshot = resolve_credentials()
-        if not snapshot.has_any:
-            raise AuthError(_no_credentials_message(snapshot))
+        # An explicit token is precedence rule 1 and stands on its own, so a
+        # broken profile must not block it. Otherwise report the *specific*
+        # problem before the generic "nothing configured" message, which would
+        # otherwise tell someone to create a profile they already have.
+        if not snapshot.iam_token_env:
+            if snapshot.profile_problem:
+                raise AuthError(
+                    f"Nebius profile {snapshot.active_profile!r} is not usable: "
+                    f"{snapshot.profile_problem}"
+                )
+            if not snapshot.has_any:
+                raise AuthError(_no_credentials_message(snapshot))
 
-        from nebius.sdk import SDK as _SDK  # heavy import, kept lazy
+        from nebius.aio.cli_config import Config  # heavy import, kept lazy
+        from nebius.sdk import SDK as _SDK
 
-        _sdk_instance = _SDK()
+        try:
+            _sdk_instance = _SDK(
+                config_reader=Config(
+                    config_file=snapshot.config_file_path,
+                    # parent_id is resolved by us, per tool; the SDK raising
+                    # NoParentIdError at construction would break every tool
+                    # on a profile that simply has no default project.
+                    no_parent_id=True,
+                ),
+                # Never try to pop a browser open: this process is an MCP server
+                # attached to a client's stdio, not an interactive terminal.
+                federation_invitation_no_browser_open=True,
+            )
+        except Exception as exc:  # ConfigError and friends
+            raise AuthError(
+                f"Could not build a Nebius client from {snapshot.config_file_path}: {exc}. "
+                "Run `nebius iam login` to refresh the profile, or set NEBIUS_IAM_TOKEN."
+            ) from exc
         return _sdk_instance
 
 

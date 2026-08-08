@@ -58,7 +58,8 @@ async def test_check_environment_warns_when_no_parent_id(
         "profiles:\n"
         "  minimal:\n"
         "    endpoint: api.eu.nebius.cloud\n"
-        "    auth-type: federation\n",
+        "    auth-type: federation\n"
+        "    federation-id: federation-abc\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
