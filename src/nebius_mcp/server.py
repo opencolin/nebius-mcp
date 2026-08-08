@@ -56,8 +56,52 @@ def is_write_mode() -> bool:
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="nebius-mcp",
+        description=(
+            "MCP server for Nebius Cloud. With no arguments it serves over stdio, "
+            "which is how an MCP client launches it."
+        ),
+        epilog="Docs: https://github.com/opencolin/nebius-mcp",
+    )
+    parser.add_argument("--version", action="version", version=f"nebius-mcp {__version__}")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "Print a credential and environment preflight as JSON, then exit. "
+            "Use this to debug setup without going through an MCP client."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.check:
+        _print_check()
+        return
+
     app = _build_app()
     app.run()  # default transport: stdio
+
+
+def _print_check() -> None:
+    """Print the same report as the ``check_environment`` tool, for humans.
+
+    Safe to write to stdout: this path exits instead of serving, so there is no
+    JSON-RPC stream to corrupt.
+    """
+    import json
+    import sys
+
+    from .tools.ops import _build_report
+
+    report = _build_report()
+    print(json.dumps(report.model_dump(), indent=2, default=str))
+    if not report.has_credentials:
+        for step in report.next_steps:
+            print(f"\n! {step}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

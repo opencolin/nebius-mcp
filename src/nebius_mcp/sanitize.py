@@ -135,11 +135,6 @@ def wrap(payload: Any, *, note: str | None = None) -> dict[str, Any]:
     return envelope
 
 
-def proto_list_to_dicts(items: list[Any]) -> list[dict[str, Any]]:
-    """Convert a list of wrapped protos and redact each."""
-    return [redact(proto_to_dict(it)) for it in items]
-
-
 def safe_proto(message: Any) -> dict[str, Any]:
     """Convert a single wrapped proto to a redacted dict."""
     redacted: dict[str, Any] = redact(proto_to_dict(message))

@@ -34,6 +34,24 @@ docs back. Tracked as a v0.2.0 item.
 **Found by:** querying the PyPI JSON API for the name the README tells people
 to install.
 
+### R-007 — Two validators are written but never called
+
+**Severity:** low, but the README asserted them as features.
+
+`validation.py` defines `validate_id` and `validate_static_ip_cidr`. Neither
+is referenced by any tool — only by their own unit tests. The README claimed
+`/32` suffix and resource-ID format checking among the guard rails; that
+claim has been corrected to describe only what is enforced
+(`validate_disk_type`, `validate_boot_disk_size`).
+
+Wiring `validate_id` broadly is not obviously safe: the patterns in
+`_ID_PATTERNS` are inferred rather than documented, so a stricter-than-reality
+pattern would reject valid IDs and break working setups. Decide deliberately —
+either confirm the formats against the API and wire them in, or delete them.
+
+**Found by:** grepping for references to every public helper, rather than
+assuming exported functions are used.
+
 ## Fixed
 
 ### R-006 — `check_environment` reported credentials that cannot authenticate
