@@ -48,7 +48,8 @@ def test_resolve_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         "  prod:\n"
         "    endpoint: api.eu.nebius.cloud\n"
         "    parent-id: project-abc123\n"
-        "    auth-type: federation\n",
+        "    auth-type: federation\n"
+        "    federation-id: federation-abc\n",
         encoding="utf-8",
     )
     snap = resolve_credentials(config_path=cfg)
@@ -107,3 +108,94 @@ def test_credential_resolution_dataclass() -> None:
         error=None,
     )
     assert snap.has_any is True
+
+
+def test_federation_profile_without_federation_id_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile can parse cleanly and still be unable to authenticate.
+
+    The SDK refuses to build from this shape with
+    ``ConfigError: Missing federation-id in the profile``. Reporting
+    has_any=True here would tell someone their credentials are fine while
+    every tool fails.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod:\n    auth-type: federation\n    parent-id: project-a\n",
+        encoding="utf-8",
+    )
+    snap = resolve_credentials(config_path=cfg)
+    assert snap.has_any is False
+    assert snap.profile_problem is not None
+    assert "federation-id" in snap.profile_problem
+
+
+def test_service_account_profile_missing_keys_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: ci\nprofiles:\n  ci:\n    auth-type: service account\n"
+        "    service-account-id: serviceaccount-a\n",
+        encoding="utf-8",
+    )
+    snap = resolve_credentials(config_path=cfg)
+    assert snap.has_any is False
+    assert snap.profile_problem is not None
+    assert "public-key-id" in snap.profile_problem
+
+
+def test_env_token_wins_over_a_broken_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit token must still work even if the config file is unusable."""
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "tok-fake")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod:\n    auth-type: federation\n",
+        encoding="utf-8",
+    )
+    snap = resolve_credentials(config_path=cfg)
+    assert snap.has_any is True
+
+
+def test_get_sdk_prefers_env_token_over_broken_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NEBIUS_IAM_TOKEN is precedence rule 1 and must not be blocked by a bad profile."""
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "tok-fake")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod:\n    auth-type: federation\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+    # Must not raise AuthError about the profile. Constructing the real SDK is
+    # offline, so this exercises the whole resolution path.
+    sdk = get_sdk()
+    assert sdk is not None
+    reset_sdk()
+
+
+def test_get_sdk_reports_broken_profile_when_no_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod:\n    auth-type: federation\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+    with pytest.raises(AuthError) as excinfo:
+        get_sdk()
+    assert "federation-id" in str(excinfo.value)
+    reset_sdk()
