@@ -8,8 +8,9 @@ Two purposes:
    indirect prompt injection via API content (e.g. instance names, tags,
    k8s annotations that came from third parties).
 
-We also cap response sizes — large list dumps blow up the model context and
-shadow real signal.
+Nothing here caps response size. The only bound on how much a list tool can
+return is ``pagination.clamp_page_size``; a single large resource still
+serializes in full.
 """
 
 from __future__ import annotations

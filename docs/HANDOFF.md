@@ -103,7 +103,8 @@ documented, so a too-strict pattern would reject valid IDs. See R-007.
 
 ## Quality gates
 
-All of these must pass; CI runs them on 3.11, 3.12, and 3.13.
+All of these must pass; CI runs them on 3.11, 3.12, and 3.13. Do not write a
+count here — it said "four" while listing five.
 
 ```bash
 uv run pytest
@@ -112,6 +113,7 @@ uv run ruff format --check .
 uv run mypy src
 uv run python scripts/check_docs_links.py
 uv run python scripts/check_release_hygiene.py
+uv run python scripts/check_security_doc.py
 ```
 
 ## Conventions

@@ -48,6 +48,9 @@ jobs:
       - name: release hygiene
         run: uv run --python ${{ matrix.python }} python scripts/check_release_hygiene.py
 
+      - name: security doc honesty
+        run: uv run --python ${{ matrix.python }} python scripts/check_security_doc.py
+
   security-scan:
     name: security scan
     runs-on: ubuntu-latest
