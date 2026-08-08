@@ -3,12 +3,13 @@
 State of the work, so another agent or person can continue without replaying
 the session. Update this when you finish a chunk.
 
-**Last updated:** 2026-08-08, after the review-and-README pass.
+**Last updated:** 2026-08-08, after the review, README, and v0.2.0 fan-out.
 
 ## Where things stand
 
-`main` is green: 94 unit tests, ruff, ruff format, mypy strict, and a docs
-link check, on Python 3.11/3.12/3.13.
+`main` is green: 97 unit tests, ruff, ruff format, mypy strict, and a docs
+link check, on Python 3.11/3.12/3.13. Verified end to end over a real stdio
+transport, not just in process.
 
 The server exposes 57 tools — 51 purpose-built, plus 6 generic ones that reach
 all 59 SDK resource types. See [the README](../README.md#tool-surface).
@@ -21,6 +22,10 @@ all 59 SDK resource types. See [the README](../README.md#tool-surface).
 | [#2](https://github.com/opencolin/nebius-mcp/pull/2) | Corrected an inflated coverage claim |
 | [#3](https://github.com/opencolin/nebius-mcp/pull/3) | Audit log moved off stdout, which was corrupting JSON-RPC |
 | [#4](https://github.com/opencolin/nebius-mcp/pull/4) | Profile authentication made to work at all |
+| [#5](https://github.com/opencolin/nebius-mcp/pull/5) | Cloud-init user data redacted; it was leaking provisioning secrets |
+| [#6](https://github.com/opencolin/nebius-mcp/pull/6) | README rewrite, `--version`/`--check` CLI, write-gate invariant, roadmap and plans |
+| [#7](https://github.com/opencolin/nebius-mcp/pull/7) | Tag-driven PyPI release pipeline with Trusted Publishing |
+| [#8](https://github.com/opencolin/nebius-mcp/pull/8) | Security audit script, which had been silently checking nothing |
 
 Every defect is written up in [REVIEW-FINDINGS.md](REVIEW-FINDINGS.md),
 including how each was caught. Read that before reviewing — the techniques
@@ -29,24 +34,39 @@ than rediscovering them.
 
 ### In flight
 
-Branch `readme-overhaul` — a full README rewrite plus:
+Five v0.2.0 tasks are being implemented in parallel git worktrees under
+`../nebius-mcp-worktrees/`, each on its own branch, each adversarially
+verified before merge:
 
-- a real CLI (`--version`, `--check`) where `--help` previously printed nothing
-- `scripts/check_docs_links.py`, wired into CI
-- the write gate enforced as a tested invariant over the whole tool surface
-- one dead helper removed and one false README claim corrected
+| Branch | Task |
+|---|---|
+| `v0.2.0-T2-release-hygiene-gate` | Version/changelog drift check on every PR |
+| `v0.2.0-T4-secrets-reveal-gate` | `secrets_reveal_payload` is annotated identically to `ping` on the two hints clients gate on — verified true |
+| `v0.2.0-T5-redaction-bypasses` | Key normalization misses camelCase; PEM and presigned-URL patterns |
+| `v0.2.0-T6-error-path-redaction` | Errors bypass the sanitizer entirely |
+| `v0.2.0-T7-honest-security-doc` | `SECURITY.md`; delete the false "spec-recommended mitigation" claim |
 
-It cannot merge until `docs/ROADMAP.md` and `docs/plans/` exist, because the
-README links to them and the new link check fails otherwise. The roadmap
-council writes those.
+If you are picking this up cold and those branches exist but are unmerged,
+review each against its acceptance criteria in
+[plans/v0.2.0.md](plans/v0.2.0.md), then merge and remove the worktree:
+
+```bash
+git worktree remove ../nebius-mcp-worktrees/T5 --force
+```
+
+Already done from the v0.2.0 plan: T1 (release pipeline, #7), T9 (CLI front
+door, #6), and parts of T3 (docs link gate) and T5 (cloud-init, #5).
 
 ## What to do next
 
-1. **Merge `readme-overhaul`** once the roadmap docs land.
-2. **Publish to PyPI** — the single highest-value item. Until then every
-   install goes through the git URL. See R-004.
-3. **Work the roadmap** — [ROADMAP.md](ROADMAP.md), then the matching file in
-   [plans/](plans/).
+1. **Register the PyPI trusted publisher** — the pipeline is built and
+   verified, but the one-time registration can only be done by the repo
+   owner. Steps are in `.github/workflows/release.yml` and R-004. Until then
+   every install goes through the git URL. This is the highest-value item.
+2. **Enable GitHub private vulnerability reporting**, which `SECURITY.md`
+   names as the disclosure channel. Also owner-only.
+3. **Land the five in-flight branches**, then continue with
+   [plans/v0.3.0.md](plans/v0.3.0.md).
 
 ## Things worth knowing before you change anything
 
