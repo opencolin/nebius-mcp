@@ -42,6 +42,9 @@ jobs:
       - name: Unit tests (pytest)
         run: uv run --python ${{ matrix.python }} pytest tests/unit -v
 
+      - name: docs links
+        run: uv run --python ${{ matrix.python }} python scripts/check_docs_links.py
+
   security-scan:
     name: security scan
     runs-on: ubuntu-latest
