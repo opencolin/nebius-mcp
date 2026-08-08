@@ -88,6 +88,32 @@ response messages and compared their fields against what the code assumed.
 None of the existing tests could catch it — they mock the response object, so
 `items` exists because the mock was told to have it.
 
+### R-009 — Truncated PEM blocks leaked their key material
+
+**Severity:** high.
+
+The PEM redaction pattern made the END marker an optional trailing group, so
+a block without one matched only its header and everything after it survived:
+
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA..."
+    -> "<redacted>\nMIIEowIBAAKCAQEA..."
+
+The code comment claimed the opposite — that the optional marker was there so
+truncated blocks would still match. Truncation is not hypothetical: capped
+error strings and log tails are exactly where half a PEM appears, and the
+error path was routed through the sanitizer in the same release.
+
+**Fix:** consume to the END marker or to end-of-string.
+
+**Found by:** the fan-out's adversarial verification pass, using mutation
+testing — it also showed that removing `client_certificate_data`,
+`ssh_authorized_keys`, the hyphen separator, or the `X-Amz-Credential`
+alternative each left the whole suite green. Tests now assert each
+individually.
+
+**The lesson:** a passing suite says nothing about which rules it actually
+constrains. Mutating the code and re-running is what tells you.
+
 ## Fixed
 
 ### R-006 — `check_environment` reported credentials that cannot authenticate
