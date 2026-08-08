@@ -3,9 +3,10 @@
 A [Model Context Protocol](https://modelcontextprotocol.io) server for
 [Nebius Cloud](https://nebius.com).
 
-Exposes Nebius compute, managed Kubernetes, AI Endpoints, VPC, container
-registry, IAM, and MysteryBox secrets as **51 typed, validated, security-
-conscious tools** to MCP-aware LLM clients (Claude Desktop, Claude Code, etc.).
+Exposes Nebius Cloud as **57 typed, validated, security-conscious tools** to
+MCP-aware LLM clients (Claude Desktop, Claude Code, etc.): 51 purpose-built
+tools for the resources agents touch constantly, plus six generic tools that
+reach **all 59 resource types and 305 operations** in the Nebius Python SDK.
 
 > **Status:** v0.1.0 alpha. Read-only by default; destructive operations are
 > gated behind `NEBIUS_MCP_MODE=write` and a `dry_run → confirm_token` two-step.
@@ -103,8 +104,10 @@ claude mcp add nebius -- uvx nebius-mcp
 
 ## Tool surface
 
-51 tools across 8 domains. Use `check_environment` first to verify auth.
-Use `get_manifest` once and pin the SHA-256 to detect later tampering.
+57 tools. Use `check_environment` first to verify auth. Use `get_manifest`
+once and pin the SHA-256 to detect later tampering.
+
+### Purpose-built tools (51, across 8 domains)
 
 | Domain | Read | State | Destructive |
 |---|---|---|---|
@@ -116,6 +119,37 @@ Use `get_manifest` once and pin the SHA-256 to detect later tampering.
 | **VPC** | `vpc_list_networks`, `vpc_get_network`, `vpc_list_subnets`, `vpc_get_subnet`, `vpc_list_security_groups`, `vpc_get_security_group`, `vpc_list_allocations`, `vpc_get_allocation` | — | `vpc_delete_network`, `vpc_delete_subnet`, `vpc_delete_security_group`, `vpc_delete_allocation` |
 | **Registry** | `registry_list`, `registry_get`, `registry_list_images`, `registry_get_image` | — | `registry_delete`, `registry_delete_image` |
 | **Secrets** | `secrets_list`, `secrets_get`, `secrets_list_versions`, `secrets_reveal_payload` | — | — |
+
+### Generic tools (6) — everything else
+
+The SDK exposes 59 resource types and 305 operations. Emitting one tool per
+resource per verb would mean ~300 tools, which measurably degrades tool
+selection in every MCP client. Instead, six tools take a `resource_type`
+discriminator and cover the whole surface:
+
+| Tool | Purpose |
+|---|---|
+| `nebius_list_resource_types` | Discovery: every resource type, its operations, and what `parent_id` means for it. Start here. |
+| `nebius_resource_list` | List any resource type. |
+| `nebius_resource_get` | Get one by ID. |
+| `nebius_resource_get_by_name` | Get one by name within a parent. |
+| `nebius_resource_delete` | Delete. Write mode + two-step confirm, same as the dedicated delete tools. |
+| `nebius_resource_action` | `start`, `stop`, `restart`, `resume`, `activate`, `deactivate`, `undelete`, `cancel`. Write mode. |
+
+This is what makes services with no dedicated tools reachable — object
+storage buckets and transfers, DNS zones and records, KMS keys, quota
+allowances, capacity blocks, audit events, managed PostgreSQL and MLflow,
+application tunnels, Kubernetes application releases, IAM service accounts /
+groups / access keys / static keys, disk snapshots, filesystems, GPU
+clusters, images, and long-running operations.
+
+`parent_id` is not always a project. Node groups are parented by a cluster,
+security rules by a security group, access keys by a service account, secret
+versions by a secret. `nebius_list_resource_types` reports this per resource,
+and a list call that returns nothing says which parent it actually wanted.
+
+Creates are intentionally *not* generic: their request bodies are deeply
+nested and benefit from typed, validated tools (`compute_create_instance`).
 
 ### Known SDK gaps
 
@@ -131,7 +165,7 @@ specific security review of the subprocess attack surface.
 
 ```bash
 uv sync                       # install runtime + dev deps
-uv run pytest                 # 59 unit tests, no Nebius traffic
+uv run pytest                 # 82 unit tests, no Nebius traffic
 uv run ruff check .           # lint
 uv run ruff format --check .  # formatting check
 uv run mypy src               # strict type check
