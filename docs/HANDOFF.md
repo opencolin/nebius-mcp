@@ -3,7 +3,7 @@
 State of the work, so another agent or person can continue without replaying
 the session. Update this when you finish a chunk.
 
-**Last updated:** 2026-08-08, after the review, README, and v0.2.0 fan-out.
+**Last updated:** 2026-08-08, after v0.2.0 landed in full.
 
 ## Where things stand
 
@@ -32,30 +32,32 @@ including how each was caught. Read that before reviewing — the techniques
 section lists what actually finds bugs here, and repeating them is cheaper
 than rediscovering them.
 
-### In flight
+### v0.2.0 status
 
-Five v0.2.0 tasks are being implemented in parallel git worktrees under
-`../nebius-mcp-worktrees/`, each on its own branch, each adversarially
-verified before merge:
+Nothing is in flight. All fifteen pull requests are merged and `main` is
+green.
 
-| Branch | Task |
-|---|---|
-| `v0.2.0-T2-release-hygiene-gate` | Version/changelog drift check on every PR |
-| `v0.2.0-T4-secrets-reveal-gate` | `secrets_reveal_payload` is annotated identically to `ping` on the two hints clients gate on — verified true |
-| `v0.2.0-T5-redaction-bypasses` | Key normalization misses camelCase; PEM and presigned-URL patterns |
-| `v0.2.0-T6-error-path-redaction` | Errors bypass the sanitizer entirely |
-| `v0.2.0-T7-honest-security-doc` | `SECURITY.md`; delete the false "spec-recommended mitigation" claim |
+Done from [plans/v0.2.0.md](plans/v0.2.0.md): T1 (release pipeline, #7), T2
+(release hygiene gate, #10), T4 (`secrets_reveal_payload` reclassified and
+triple-gated, #11), T5 (redaction bypasses, #13), T6 (error-path redaction,
+#14), T7 (`SECURITY.md` and the retired claims, #15), T9 (CLI front door,
+#6), and the docs-link half of T3 (#6).
 
-If you are picking this up cold and those branches exist but are unmerged,
-review each against its acceptance criteria in
-[plans/v0.2.0.md](plans/v0.2.0.md), then merge and remove the worktree:
+T3's remaining half — generating the counts the docs quote rather than
+hand-writing them — is the main open item. The test count has been wrong at
+82, 84, 85, 90, 92, and 94 across this session alone, which is the argument
+for generating it.
 
-```bash
-git worktree remove ../nebius-mcp-worktrees/T5 --force
-```
+Tasks T2, T4, T5, T6 and T7 were implemented in parallel by five agents in
+isolated `git worktree` checkouts, each adversarially verified against its
+acceptance criteria before merge. That worked well and is worth repeating for
+v0.3.0. Two things to know if you do:
 
-Already done from the v0.2.0 plan: T1 (release pipeline, #7), T9 (CLI front
-door, #6), and parts of T3 (docs link gate) and T5 (cloud-init, #5).
+- The three branches touching `sanitize.py` conflicted and had to be rebased
+  and merged one at a time. Splitting by file, not just by task, would avoid
+  that.
+- Every conflict was additive — both sides wanted their content. Resolve by
+  keeping both unless you can articulate why one should lose.
 
 ## What to do next
 
@@ -65,8 +67,9 @@ door, #6), and parts of T3 (docs link gate) and T5 (cloud-init, #5).
    every install goes through the git URL. This is the highest-value item.
 2. **Enable GitHub private vulnerability reporting**, which `SECURITY.md`
    names as the disclosure channel. Also owner-only.
-3. **Land the five in-flight branches**, then continue with
-   [plans/v0.3.0.md](plans/v0.3.0.md).
+3. **Continue with [plans/v0.3.0.md](plans/v0.3.0.md)** — write coverage
+   (generic create/update) and scoping for write mode, which `SECURITY.md`
+   names as the fix for the single global boolean.
 
 ## Things worth knowing before you change anything
 
