@@ -520,10 +520,9 @@ Nebius ships a CLI and a Python SDK. Neither suits an agent on its own:
   [skill](https://github.com/opencolin/nebius-skill) gotchas.
 
 `nebius-mcp` adds the safety model above, plus validation drawn from real
-failures: 50 GiB minimum boot disks for CUDA images, `network_ssd` with
-underscores rather than the `network-ssd` Nebius rejects, `/32` suffixes on
-static IPs, and resource-ID format checks — each failing fast with an
-explanation instead of an opaque gRPC error.
+failures — 50 GiB minimum boot disks for CUDA images, and `network_ssd` with
+underscores rather than the `network-ssd` Nebius rejects — each failing fast
+with an explanation instead of an opaque gRPC error.
 
 ---
 
