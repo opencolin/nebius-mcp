@@ -301,12 +301,14 @@ refuses to run.
 **Two-step confirm for irreversible things.** A delete returns a preview and a
 single-use token bound to the exact arguments, valid for 120 seconds. Only a
 second call carrying that token executes. Cancelling a job counts as
-irreversible and takes the same path.
+irreversible and takes the same path. This is a mistake guard, not an injection
+defense — the model holds the token and can replay it without asking anyone.
 
 **Results are labelled as data.** Every response is wrapped in an envelope
 telling the model that resource names, tags, and descriptions are untrusted
-input, not instructions. Token-shaped values are stripped recursively. This is
-the mitigation for indirect prompt injection through your own cloud metadata.
+input, not instructions. Token-shaped values are stripped recursively. That
+raises the cost of indirect prompt injection through your own cloud metadata;
+it is advice to a model, not enforcement.
 
 **Secrets stay behind three doors.** The generic tools cannot reach any
 secret-returning API. `secrets_reveal_payload` is the only tool that returns
@@ -322,6 +324,12 @@ sessions to detect tool poisoning.
 
 **Every call is audited** to stderr as JSON: tool name, a hash of the arguments,
 mode, and outcome. Never raw arguments, tokens, or secret values.
+
+**What it does not defend against is written down too.**
+[SECURITY.md](SECURITY.md) carries the threat model: one row per threat, each
+marked mitigated, partial, or not mitigated, with the enforcing code named.
+Read it before pointing this at an account that matters. It is also where to
+report a vulnerability.
 
 ### Write mode
 

@@ -8,9 +8,21 @@ The pattern:
   3. Model calls the same tool again with the matching ``confirm_token``.
   4. We consume the token (single use, expires) and execute the real call.
 
-This mirrors AWS Labs / Cloudflare patterns and is the spec-recommended
-mitigation for tools annotated ``destructiveHint=True`` against indirect
-prompt injection that flips a model into deleting things.
+What this is, and what it is not
+--------------------------------
+It is a mistake guard. One mis-aimed call cannot delete anything, and the
+exact target appears in the transcript before the deletion happens, where a
+person reading along can stop it.
+
+It is not a defense against prompt injection. The token is handed to the
+model and the model replays it; no step requires a human. Both calls can be
+issued back to back by the same caller with nobody else involved —
+``tests/unit/test_destructive_flow.py::test_delete_with_confirm_token_executes``
+does precisely that. Whatever can make a model call a delete once can make it
+call the delete twice.
+
+What bounds the damage is the write-mode gate (:func:`require_write`) and the
+permissions on the credentials the server runs with. See ``SECURITY.md``.
 """
 
 from __future__ import annotations

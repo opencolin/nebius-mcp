@@ -8,7 +8,14 @@
 By default we return secret METADATA only. ``secrets_reveal_payload`` is the
 only tool that returns plaintext, and it sits behind three independent gates:
 write mode, the ``NEBIUS_MCP_ALLOW_SECRET_REVEAL`` opt-in, and the confirm-token
-two-step. See ``REVEAL_ANNOTATIONS`` for why it is not annotated read-only.
+two-step.
+
+No annotation obliges a client to prompt before a tool runs: ``openWorldHint``
+says whether the tool touches an open-ended external system, and clients that
+gate at all gate on ``readOnlyHint`` and ``destructiveHint``. That is why this
+tool is annotated destructive rather than read-only — see
+``REVEAL_ANNOTATIONS``. It is the most sensitive tool the server exposes; see
+``SECURITY.md``.
 """
 
 from __future__ import annotations
