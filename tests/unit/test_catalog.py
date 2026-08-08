@@ -70,3 +70,31 @@ def test_describe_reports_parent_semantics() -> None:
 def test_alias_parser_rejects_non_alias_strings() -> None:
     assert catalog._resolve_alias("NotAnAlias") is None
     assert catalog._resolve_alias("_NebiusType_nebius_does_not_exist_Foo_deadbeef") is None
+
+
+def test_every_list_capable_resource_resolves_its_collection_field() -> None:
+    """A list response whose collection is not called `items` must still be read.
+
+    Assuming `items` made managed PostgreSQL and OperationService return an
+    empty list — indistinguishable from an account that genuinely has none,
+    which is a wrong answer that looks like a correct one.
+    """
+    unresolved = [
+        spec.key
+        for spec in catalog.RESOURCES
+        if catalog.supports(spec.key, "list") and catalog.list_items_field(spec.key) is None
+    ]
+    assert not unresolved, f"no collection field resolved for: {unresolved}"
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("compute.instance", "items"),
+        ("msp.postgresql_cluster", "clusters"),
+        ("msp.postgresql_backup", "backups"),
+        ("common.operation", "operations"),
+    ],
+)
+def test_known_collection_field_names(key: str, expected: str) -> None:
+    assert catalog.list_items_field(key) == expected
