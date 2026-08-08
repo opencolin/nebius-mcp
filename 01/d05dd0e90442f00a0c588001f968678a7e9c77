@@ -1,0 +1,21 @@
+README.md
+  s_c2c61c647c9194::t_a2cc35144df0d2 523-525
+docs/REVIEW-FINDINGS.md
+  s_c2c61c647c9194::t_067889abbd67e8 37-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "01d05dd0e90442f00a0c588001f968678a7e9c77",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}

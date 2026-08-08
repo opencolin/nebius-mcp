@@ -1,0 +1,23 @@
+src/nebius_mcp/tools/compute.py
+  s_c2c61c647c9194::t_4310ccb86624ed 448-453
+tests/unit/test_write_gate_coverage.py
+  s_c2c61c647c9194::t_ab35e703b3b6a7 1-95
+scripts/check_docs_links.py
+  s_c2c61c647c9194::t_a7682bebc79170 74-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "4a03c3d1644812257b6cd656203ad5145fca49fa",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
