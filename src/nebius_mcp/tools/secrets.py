@@ -161,6 +161,9 @@ def register(app: FastMCP) -> None:
         )
 
         client = service(PayloadServiceClient)
+        # get() and get_by_key() return different payload messages; both are
+        # serialized the same way below.
+        resp: Any
         if key is not None:
             req_kwargs: dict[str, Any] = {"secret_id": secret_id, "key": key}
             if version_id:

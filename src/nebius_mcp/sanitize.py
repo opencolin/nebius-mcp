@@ -14,6 +14,7 @@ shadow real signal.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -63,12 +64,25 @@ DATA_PREAMBLE = (
 
 
 def proto_to_dict(message: Any) -> dict[str, Any]:
-    """Convert a wrapped Nebius proto message to a plain dict.
+    """Convert a Nebius message to a plain dict.
 
-    The wrapper stashes the underlying ``google.protobuf.message.Message``
-    in ``__dict__['__pb2_message__']``. Falls back to assuming ``message``
-    is already a protobuf for non-wrapped responses.
+    Two SDK generations are supported:
+
+    * ``nebius >= 0.4`` generates self-contained ``nebius.base.protos.direct.Message``
+      classes with no ``google.protobuf`` backing object at all. They expose
+      ``to_json``, which is the only supported way in.
+    * ``nebius < 0.4`` wrapped a real protobuf and stashed it in
+      ``__dict__['__pb2_message__']``.
+
+    Handling both keeps the sanitizer working across an SDK upgrade; passing a
+    0.4-era message to ``MessageToDict`` raises ``AttributeError: DESCRIPTOR``,
+    which would otherwise surface as a generic API error on *every* tool call.
     """
+    to_json = getattr(message, "to_json", None)
+    if callable(to_json):
+        parsed: dict[str, Any] = json.loads(to_json(preserving_proto_field_name=True))
+        return parsed
+
     pb = message.__dict__.get("__pb2_message__") if hasattr(message, "__dict__") else None
     if pb is None:
         pb = message

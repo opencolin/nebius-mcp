@@ -603,18 +603,6 @@ wheels = [
 ]
 
 [[package]]
-name = "googleapis-common-protos"
-version = "1.74.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/20/18/a746c8344152d368a5aac738d4c857012f2c5d1fd2eac7e17b647a7861bd/googleapis_common_protos-1.74.0.tar.gz", hash = "sha256:57971e4eeeba6aad1163c1f0fc88543f965bb49129b8bb55b2b7b26ecab084f1", size = 151254, upload-time = "2026-04-02T21:23:26.679Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/b0/be5d3329badb9230b765de6eea66b73abd5944bdeb5afb3562ddcd80ae84/googleapis_common_protos-1.74.0-py3-none-any.whl", hash = "sha256:702216f78610bb510e3f12ac3cafd281b7ac45cc5d86e90ad87e4d301a3426b5", size = 300743, upload-time = "2026-04-02T21:22:49.108Z" },
-]
-
-[[package]]
 name = "griffelib"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -672,20 +660,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/68/67f4947ed55d2e69f2cc199ab9fd85e0a0034d813bbeef84df6d2ba4d4b7/grpcio-1.80.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:31b9ac4ad1aa28ffee5503821fafd09e4da0a261ce1c1281c6c8da0423c83b6e", size = 7828477, upload-time = "2026-03-30T08:48:32.054Z" },
     { url = "https://files.pythonhosted.org/packages/44/b6/8d4096691b2e385e8271911a0de4f35f0a6c7d05aff7098e296c3de86939/grpcio-1.80.0-cp314-cp314-win32.whl", hash = "sha256:367ce30ba67d05e0592470428f0ec1c31714cab9ef19b8f2e37be1f4c7d32fae", size = 4218563, upload-time = "2026-03-30T08:48:34.538Z" },
     { url = "https://files.pythonhosted.org/packages/e5/8c/bbe6baf2557262834f2070cf668515fa308b2d38a4bbf771f8f7872a7036/grpcio-1.80.0-cp314-cp314-win_amd64.whl", hash = "sha256:3b01e1f5464c583d2f567b2e46ff0d516ef979978f72091fd81f5ab7fa6e2e7f", size = 5019457, upload-time = "2026-03-30T08:48:37.308Z" },
-]
-
-[[package]]
-name = "grpcio-status"
-version = "1.80.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/ed/105f619bdd00cb47a49aa2feea6232ea2bbb04199d52a22cc6a7d603b5cb/grpcio_status-1.80.0.tar.gz", hash = "sha256:df73802a4c89a3ea88aa2aff971e886fccce162bc2e6511408b3d67a144381cd", size = 13901, upload-time = "2026-03-30T08:54:34.784Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/80/58cd2dfc19a07d022abe44bde7c365627f6c7cb6f692ada6c65ca437d09a/grpcio_status-1.80.0-py3-none-any.whl", hash = "sha256:4b56990363af50dbf2c2ebb80f1967185c07d87aa25aa2bea45ddb75fc181dbe", size = 14638, upload-time = "2026-03-30T08:54:01.569Z" },
 ]
 
 [[package]]
@@ -1195,22 +1169,22 @@ wheels = [
 
 [[package]]
 name = "nebius"
-version = "0.3.63"
+version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "certifi" },
     { name = "cryptography" },
     { name = "grpcio" },
-    { name = "grpcio-status" },
     { name = "portalocker" },
     { name = "protobuf" },
     { name = "pyjwt" },
     { name = "pyyaml" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/77/3b5889d42e681266843c7964d838e0e3056c0fc09329ddd84f694cd363a9/nebius-0.3.63.tar.gz", hash = "sha256:a414da7c88c535f501e5e8818283c555d416a78e8d3919319fadf0e44deaff92", size = 894811, upload-time = "2026-04-30T09:14:27.408Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/96/e5/29029f6536059d910a74224eef4d4a6d60dd6f0a63431493357dc96b12f1/nebius-0.4.4.tar.gz", hash = "sha256:2a8e28e91b6372cef77d465c5c0b022ffa3843b98ac74dd71d6e742d3aac00b8", size = 981901, upload-time = "2026-08-05T08:43:43.648Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/42/361b1adf2bb4858d8f57685d4f8314a77fab90b379b6b14b0774a3af5cf3/nebius-0.3.63-py3-none-any.whl", hash = "sha256:f82bb908ace3e809c2938cac46a91e77284804213c7beb5bbd3d8d6b469fbb42", size = 1246667, upload-time = "2026-04-30T09:14:25.622Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/77/f0e6b3cd6f676a04c256a15b187a407840035bc31413860befafdffca4f8/nebius-0.4.4-py3-none-any.whl", hash = "sha256:c3cc909f6c47e27bda2fdeedbae3e0f13224d537f25ea1ba5b96bf05243d39c1", size = 1007917, upload-time = "2026-08-05T08:43:41.511Z" },
 ]
 
 [[package]]
@@ -1235,7 +1209,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.2.4,<4.0" },
-    { name = "nebius", specifier = ">=0.3.63,<0.4" },
+    { name = "nebius", specifier = ">=0.4.4,<0.5" },
     { name = "pydantic", specifier = ">=2.13.0,<3.0" },
     { name = "structlog", specifier = ">=25.5.0,<26.0" },
 ]

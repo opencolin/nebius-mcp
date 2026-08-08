@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=3.2.4,<4.0",
-    "nebius>=0.3.63,<0.4",
+    "nebius>=0.4.4,<0.5",
     "pydantic>=2.13.0,<3.0",
     "structlog>=25.5.0,<26.0",
 ]

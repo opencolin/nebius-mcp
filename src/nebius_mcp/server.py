@@ -38,7 +38,7 @@ def _build_app() -> FastMCP:
 
 
 def _register_tools(app: FastMCP) -> None:
-    from .tools import ai, compute, iam, k8s, ops, registry, secrets, vpc
+    from .tools import ai, compute, generic, iam, k8s, ops, registry, secrets, vpc
 
     ops.register(app)
     iam.register(app)
@@ -48,6 +48,7 @@ def _register_tools(app: FastMCP) -> None:
     vpc.register(app)
     registry.register(app)
     secrets.register(app)
+    generic.register(app)
 
 
 def is_write_mode() -> bool:
