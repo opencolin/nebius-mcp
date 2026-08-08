@@ -6,7 +6,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for
 Exposes Nebius Cloud as **57 typed, validated, security-conscious tools** to
 MCP-aware LLM clients (Claude Desktop, Claude Code, etc.): 51 purpose-built
 tools for the resources agents touch constantly, plus six generic tools that
-reach **all 59 resource types and 305 operations** in the Nebius Python SDK.
+reach **every one of the 59 resource types** in the Nebius Python SDK.
 
 > **Status:** v0.1.0 alpha. Read-only by default; destructive operations are
 > gated behind `NEBIUS_MCP_MODE=write` and a `dry_run → confirm_token` two-step.
@@ -125,7 +125,8 @@ once and pin the SHA-256 to detect later tampering.
 The SDK exposes 59 resource types and 305 operations. Emitting one tool per
 resource per verb would mean ~300 tools, which measurably degrades tool
 selection in every MCP client. Instead, six tools take a `resource_type`
-discriminator and cover the whole surface:
+discriminator. They cover **all 59 resource types and 215 of the 305
+operations** — every read, every delete, and every lifecycle action:
 
 | Tool | Purpose |
 |---|---|
@@ -148,8 +149,11 @@ security rules by a security group, access keys by a service account, secret
 versions by a secret. `nebius_list_resource_types` reports this per resource,
 and a list call that returns nothing says which parent it actually wanted.
 
-Creates are intentionally *not* generic: their request bodies are deeply
-nested and benefit from typed, validated tools (`compute_create_instance`).
+The remaining 90 operations are creates, updates, and key-issuing calls. They
+are intentionally *not* generic: their request bodies are deeply nested and
+benefit from typed, validated tools (`compute_create_instance`), and keeping
+`issue`/`get_secret_once` out of the generic layer means plaintext
+credentials stay reachable only through the one tool annotated for it.
 
 ### Known SDK gaps
 
