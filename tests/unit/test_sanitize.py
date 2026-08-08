@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
+import pytest
+
 from nebius_mcp.sanitize import (
     DATA_PREAMBLE,
     proto_to_dict,
@@ -100,3 +105,95 @@ def test_ssh_public_keys_are_not_redacted() -> None:
     """Public keys are public. Over-redacting makes instance output useless."""
     out = redact({"ssh_public_key": "ssh-rsa AAAAB3NzaC1yc2E"})
     assert out["ssh_public_key"] == "ssh-rsa AAAAB3NzaC1yc2E"
+
+
+_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9.c2lnbmF0dXJl"
+
+# (case id, payload handed to redact, the cleartext that must not survive).
+# Half of these are key-driven and half value-driven, which is the point: a
+# sanitizer that only matches keys leaks anything an API embeds in a string,
+# and one that only matches values leaks every opaque blob it has no pattern
+# for.
+_BYPASS_CASES: tuple[tuple[str, dict[str, Any], str], ...] = (
+    ("secret_key", {"secret_key": "SK-CLEARTEXT-0"}, "SK-CLEARTEXT-0"),
+    ("secretKey", {"secretKey": "SK-CLEARTEXT-1"}, "SK-CLEARTEXT-1"),
+    ("accessKeySecret", {"accessKeySecret": "SK-CLEARTEXT-2"}, "SK-CLEARTEXT-2"),
+    (
+        "cloud_init_user_data",
+        {"spec": {"cloud_init_user_data": "#cloud-config\nDB_PASSWORD=SK-CLEARTEXT-3"}},
+        "SK-CLEARTEXT-3",
+    ),
+    (
+        "client_key_data",
+        {"client_key_data": "LS0tLS1CRUdJTiBSU0EgUFJJSK-CLEARTEXT-4"},
+        "SK-CLEARTEXT-4",
+    ),
+    (
+        "kubeconfig",
+        {"kubeconfig": "apiVersion: v1\nusers:\n- user:\n    token: SK-CLEARTEXT-5"},
+        "SK-CLEARTEXT-5",
+    ),
+    (
+        "pem_header",
+        {"description": "-----BEGIN RSA PRIVATE KEY-----"},
+        "-----BEGIN RSA PRIVATE KEY-----",
+    ),
+    (
+        "presigned_url",
+        {
+            "url": (
+                "https://storage.eu-north1.nebius.cloud/bucket/object"
+                "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                "&X-Amz-Credential=SK-CLEARTEXT-6%2F20260808%2Feu-north1%2Fs3"
+                "&X-Amz-Signature=SK-CLEARTEXT-7"
+            )
+        },
+        "SK-CLEARTEXT-7",
+    ),
+    ("jwt", {"note": f"bearer {_JWT}"}, _JWT),
+    # Not in the original nine. EndpointSpec.VolumeMount.S3Config.S3Credentials
+    # in nebius.api.nebius.ai.v1 carries this field, and ai_get_endpoint returns
+    # the spec, so a plaintext S3 secret reached the model until the substring
+    # rule stopped requiring a leading separator.
+    ("secret_access_key", {"secret_access_key": "SK-CLEARTEXT-8"}, "SK-CLEARTEXT-8"),
+)
+
+
+@pytest.mark.parametrize(
+    ("payload", "cleartext"),
+    [(payload, cleartext) for _, payload, cleartext in _BYPASS_CASES],
+    ids=[case_id for case_id, _, _ in _BYPASS_CASES],
+)
+def test_known_redaction_bypasses_are_closed(payload: dict[str, Any], cleartext: str) -> None:
+    """Each of these reached the model in the clear at some point in this repo's history."""
+    out = json.dumps(redact(payload))
+
+    assert "<redacted>" in out
+    assert cleartext not in out
+
+
+def test_presigned_url_keeps_its_object_path() -> None:
+    """Redact the signature, not the whole URL.
+
+    The bucket and object path are what make a storage error diagnosable, and
+    a presigned URL without its signature cannot be replayed.
+    """
+    url = "https://storage.eu-north1.nebius.cloud/bucket/object?X-Amz-Signature=abcdef0123456789"
+    out = redact({"url": url})
+
+    assert out["url"].startswith("https://storage.eu-north1.nebius.cloud/bucket/object")
+    assert "abcdef0123456789" not in out["url"]
+
+
+def test_prose_containing_the_word_secret_is_left_alone() -> None:
+    """Value matching is by pattern, never by keyword.
+
+    Descriptions are free text. Redacting them because they contain the word
+    "secret" would corrupt them silently, which is worse than leaving them
+    verbose: nothing in the output signals that anything was lost.
+    """
+    prose = "Rotate the secret before the credential audit; the password policy is annual."
+    out = redact({"description": prose, "name": "secret-rotation-runbook"})
+
+    assert out["description"] == prose
+    assert out["name"] == "secret-rotation-runbook"
