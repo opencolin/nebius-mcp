@@ -1,0 +1,19 @@
+tests/unit/test_sanitize.py
+  s_c2c61c647c9194::t_417d01e269ee3e 18-29,150-151,222,227,242-246,248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "63b434882292405da4091c24bb8c379a3d1044a5",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
