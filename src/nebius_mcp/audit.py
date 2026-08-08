@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from typing import Any
 
 import structlog
@@ -26,7 +27,7 @@ def _init() -> None:
     logging.basicConfig(
         level=level,
         format="%(message)s",
-        stream=__import__("sys").stderr,
+        stream=sys.stderr,
     )
     structlog.configure(
         processors=[
@@ -36,6 +37,12 @@ def _init() -> None:
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level)),
+        # MUST be stderr. structlog does not route through stdlib logging here,
+        # so basicConfig(stream=...) above does not apply to it — its default
+        # PrintLoggerFactory writes to stdout, which on the stdio transport IS
+        # the JSON-RPC channel. Every audit line then lands in the protocol
+        # stream and clients report parse errors on each tool call.
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
     )
     _initialized = True
