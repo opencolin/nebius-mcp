@@ -37,6 +37,12 @@ _SENSITIVE_KEYS: frozenset[str] = frozenset(
         "password",
         "credential",
         "credentials",
+        # Cloud-init is a standard place to inject API keys, database
+        # passwords, and registry logins at provision time. compute_get_instance
+        # and compute_list_instances return the spec verbatim, so without this
+        # the sanitizer hands the model every secret baked into a VM.
+        "cloud_init_user_data",
+        "user_data",
     }
 )
 

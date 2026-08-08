@@ -63,3 +63,40 @@ def test_proto_to_dict_with_real_proto() -> None:
     inst = Instance(metadata=ResourceMetadata(id="i-1", parent_id="p-1", name="vm"))
     d = proto_to_dict(inst)
     assert d == {"metadata": {"id": "i-1", "parent_id": "p-1", "name": "vm"}}
+
+
+def test_cloud_init_user_data_is_redacted() -> None:
+    """Cloud-init is where provisioning secrets live.
+
+    compute_get_instance and compute_list_instances return the instance spec
+    verbatim, so anything baked into user-data at create time — API keys,
+    database passwords, registry logins — would otherwise be handed straight
+    to the model.
+    """
+    payload = {
+        "spec": {
+            "cloud_init_user_data": (
+                "#cloud-config\n"
+                "write_files:\n"
+                "  - content: |\n"
+                "      OPENAI_API_KEY=sk-proj-REALKEY\n"
+                "      DB_PASSWORD=hunter2\n"
+            )
+        }
+    }
+
+    out = redact(payload)
+
+    assert out["spec"]["cloud_init_user_data"] == "<redacted>"
+    assert "sk-proj-REALKEY" not in str(out)
+    assert "hunter2" not in str(out)
+
+
+def test_plain_user_data_is_redacted() -> None:
+    assert redact({"user_data": "SECRET"})["user_data"] == "<redacted>"
+
+
+def test_ssh_public_keys_are_not_redacted() -> None:
+    """Public keys are public. Over-redacting makes instance output useless."""
+    out = redact({"ssh_public_key": "ssh-rsa AAAAB3NzaC1yc2E"})
+    assert out["ssh_public_key"] == "ssh-rsa AAAAB3NzaC1yc2E"
