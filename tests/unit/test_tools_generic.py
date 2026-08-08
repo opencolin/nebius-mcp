@@ -115,7 +115,10 @@ async def test_resource_get_uses_id(
     assert mock_service[ZoneServiceClient].get.call_args[0][0].id == "zone-1"
 
 
-async def test_unsupported_verb_reports_available_operations() -> None:
+async def test_unsupported_verb_reports_available_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEBIUS_MCP_MODE", "write")
     app = _build_app()
     async with Client(app) as c:
         result = await c.call_tool(
@@ -173,3 +176,51 @@ async def test_action_requires_write_mode(monkeypatch: pytest.MonkeyPatch) -> No
         )
     assert result.is_error
     assert "write mode is disabled" in result.content[0].text
+
+
+async def test_cancel_action_requires_confirm_token(
+    monkeypatch: pytest.MonkeyPatch, mock_service: defaultdict[type, MagicMock]
+) -> None:
+    """Cancelling a job discards work, so it takes the same gate as a delete."""
+    from nebius.api.nebius.ai.v1 import JobServiceClient
+
+    monkeypatch.setenv("NEBIUS_MCP_MODE", "write")
+    app = _build_app()
+    async with Client(app) as c:
+        first = _payload(
+            await c.call_tool(
+                "nebius_resource_action",
+                {"resource_type": "ai.job", "action": "cancel", "id": "job-1"},
+            )
+        )
+    assert mock_service[JobServiceClient].cancel.call_count == 0
+    assert first["confirm_token"]
+    assert "NOT executed" in first["_preamble"]
+
+
+async def test_reversible_action_needs_no_confirm_token(
+    monkeypatch: pytest.MonkeyPatch, mock_service: defaultdict[type, MagicMock]
+) -> None:
+    """start/stop are reversible and must not demand a round trip."""
+    from nebius.api.nebius.ai.v1 import EndpointServiceClient
+
+    op = MagicMock()
+    op.wait.return_value = _async(None)
+    mock_service[EndpointServiceClient].stop.return_value = _async(op)
+
+    monkeypatch.setenv("NEBIUS_MCP_MODE", "write")
+    app = _build_app()
+    async with Client(app) as c:
+        body = _payload(
+            await c.call_tool(
+                "nebius_resource_action",
+                {
+                    "resource_type": "ai.endpoint",
+                    "action": "stop",
+                    "id": "e-1",
+                    "wait": False,
+                },
+            )
+        )
+    assert "confirm_token" not in body
+    assert mock_service[EndpointServiceClient].stop.call_count == 1

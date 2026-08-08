@@ -45,9 +45,14 @@ READ_ANNOTATIONS = {
 _KEYS = tuple(spec.key for spec in catalog.RESOURCES)
 ResourceType = Literal[_KEYS]  # type: ignore[valid-type]
 
-# Reversible lifecycle verbs the action tool will dispatch.
+# Lifecycle verbs the action tool will dispatch.
 _ACTIONS = ("start", "stop", "restart", "resume", "activate", "deactivate", "undelete", "cancel")
 ActionName = Literal[_ACTIONS]  # type: ignore[valid-type]
+
+# Actions that destroy work rather than just flipping state. Cancelling an AI
+# training job or a running export discards everything it has done so far and
+# cannot be resumed, so these take the same two-step confirm as a delete.
+_IRREVERSIBLE_ACTIONS = frozenset({"cancel"})
 
 
 def _request_fields(request_cls: type) -> frozenset[str]:
@@ -283,9 +288,13 @@ def register(app: FastMCP) -> None:
             Field(description="Wait timeout.", default=DEFAULT_WAIT_TIMEOUT_SECONDS, ge=1),
         ] = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        spec = catalog.BY_KEY.get(resource_type)
+        # Check the mode before the verb, so a read-only server answers
+        # "write mode is disabled" rather than doubling as an oracle for which
+        # SDK operations exist. Validate the verb before issuing a token, so a
+        # dry run cannot hand back a token that is guaranteed to fail on use.
+        require_write("nebius_resource_delete")
+        spec = catalog.BY_KEY[resource_type]
         request_cls = _require(resource_type, "delete")
-        assert spec is not None
 
         gate = preview_or_execute(
             tool="nebius_resource_delete",
@@ -307,10 +316,11 @@ def register(app: FastMCP) -> None:
     @app.tool(
         name="nebius_resource_action",
         description=(
-            "Run a reversible lifecycle action (start, stop, restart, resume, "
-            "activate, deactivate, undelete, cancel) on any Nebius resource that "
-            "supports it. Gated by write mode. Use nebius_list_resource_types to "
-            "see which actions a resource supports."
+            "Run a lifecycle action (start, stop, restart, resume, activate, "
+            "deactivate, undelete, cancel) on any Nebius resource that supports "
+            "it. Gated by write mode. 'cancel' discards in-flight work and so "
+            "additionally requires the two-step confirm_token flow. Use "
+            "nebius_list_resource_types to see which actions a resource supports."
         ),
         annotations=STATE_ANNOTATIONS,
     )
@@ -320,6 +330,13 @@ def register(app: FastMCP) -> None:
         ],
         action: Annotated[ActionName, Field(description="Lifecycle action to perform.")],
         id: Annotated[str, Field(description="Resource ID.", min_length=1)],
+        confirm_token: Annotated[
+            str | None,
+            Field(
+                description="Token from a prior dry-run call. Required for 'cancel'.",
+                default=None,
+            ),
+        ] = None,
         wait: Annotated[
             bool, Field(description="Block until the operation completes.", default=True)
         ] = True,
@@ -329,7 +346,23 @@ def register(app: FastMCP) -> None:
         ] = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         require_write("nebius_resource_action")
+        spec = catalog.BY_KEY[resource_type]
         request_cls = _require(resource_type, action)
+
+        if action in _IRREVERSIBLE_ACTIONS:
+            gate = preview_or_execute(
+                tool="nebius_resource_action",
+                args={"resource_type": resource_type, "action": action, "id": id},
+                confirm_token=confirm_token,
+                preview={
+                    "action": f"Cancel {spec.label} {id} — in-flight work is discarded",
+                    "resource_type": resource_type,
+                    "id": id,
+                },
+            )
+            if gate is not None:
+                return gate  # type: ignore[return-value]
+
         client: Any = service(catalog.client_class(resource_type))
         method = getattr(client, action)
         op = await safe(method(request_cls(id=id)))

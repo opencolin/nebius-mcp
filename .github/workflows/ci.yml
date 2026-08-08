@@ -47,6 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # gitleaks-action diffs <sha>^..<sha>, which needs the parent commit.
+          # The default shallow checkout has only one commit, so git errors out
+          # and the action exits 1 after scanning ~0 bytes — a red check that
+          # never actually inspected anything.
+          fetch-depth: 0
 
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
