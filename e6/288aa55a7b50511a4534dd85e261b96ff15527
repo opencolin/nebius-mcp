@@ -1,0 +1,34 @@
+.github/workflows/ci.yml
+  s_c2c61c647c9194::t_5b803b55c856f9 48-50
+scripts/check_release_hygiene.py
+  s_c2c61c647c9194::t_92229cb52a5ac7 113-117
+  s_c2c61c647c9194::t_568b9f7ab1709f 47-49,57-59,69
+  s_c2c61c647c9194::t_e02db7907faa2f 191
+  s_c2c61c647c9194::t_d5acc90a2208d3 172
+  s_c2c61c647c9194::t_06df6229cd8713 25
+  s_c2c61c647c9194::t_c5f8ab82b65e5e 1-24,26-32,35-46,50-56,60-68,70-112,118-135,137-171,173-190,192-207
+  s_c2c61c647c9194::t_b7720bc52e0c53 33-34
+  s_c2c61c647c9194::t_83a98fcb31ff0d 136
+tests/unit/test_release_hygiene.py
+  s_c2c61c647c9194::t_fef22ec0febc58 143-167
+  s_c2c61c647c9194::t_feb52d31300d7c 178
+  s_c2c61c647c9194::t_eedf6ee0328c8d 1-142,168-177,179-180
+docs/HANDOFF.md
+  s_c2c61c647c9194::t_2de42d31e8df20 86,94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "e6288aa55a7b50511a4534dd85e261b96ff15527",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
