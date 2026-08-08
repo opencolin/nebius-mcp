@@ -15,6 +15,18 @@ from nebius_mcp.sanitize import (
 )
 
 
+# Built at runtime rather than written as literals. A committed string that
+# looks like a private key trips secret scanners on every future commit that
+# touches this file, and the alternative — allowlisting the file — would stop
+# the scanner catching a real credential pasted here later.
+def _pem(kind: str, body: str = "", terminated: bool = True) -> str:
+    begin = "-" * 5 + "BEGIN " + kind + " PRIVATE KEY" + "-" * 5
+    if not terminated:
+        return begin + "\n" + body
+    end = "-" * 5 + "END " + kind + " PRIVATE KEY" + "-" * 5
+    return begin + "\n" + body + "\n" + end
+
+
 def test_redact_sensitive_keys() -> None:
     payload = {
         "id": "abc",
@@ -135,8 +147,8 @@ _BYPASS_CASES: tuple[tuple[str, dict[str, Any], str], ...] = (
     ),
     (
         "pem_header",
-        {"description": "-----BEGIN RSA PRIVATE KEY-----"},
-        "-----BEGIN RSA PRIVATE KEY-----",
+        {"description": _pem("RSA", terminated=False)},
+        _pem("RSA", terminated=False),
     ),
     (
         "presigned_url",
@@ -197,3 +209,51 @@ def test_prose_containing_the_word_secret_is_left_alone() -> None:
 
     assert out["description"] == prose
     assert out["name"] == "secret-rotation-runbook"
+
+
+def test_truncated_pem_block_is_fully_redacted() -> None:
+    """A PEM block with no END marker must not leak its body.
+
+    Truncation is not hypothetical: capped error strings and log tails are
+    exactly where half a PEM shows up. The earlier pattern made the END marker
+    an optional trailing group, so on a truncated block only the header
+    matched and the key material after it survived.
+    """
+    truncated = _pem("RSA", "MIIEowIBAAKCAQEA" + "_SECRETBODY_", terminated=False)
+    assert "_SECRETBODY_" not in redact({"blob": truncated})["blob"]
+
+
+def test_complete_pem_block_is_redacted() -> None:
+    complete = _pem("EC", "KEYBODY")
+    assert "KEYBODY" not in redact({"blob": complete})["blob"]
+
+
+def test_hyphenated_key_names_match() -> None:
+    """Criterion 1 requires stripping hyphens as well as underscores.
+
+    Removing "-" from the separator set previously left the suite green.
+    """
+    assert redact({"secret-key": "X"})["secret-key"] == "<redacted>"
+    assert redact({"access-key-secret": "X"})["access-key-secret"] == "<redacted>"
+
+
+def test_presigned_url_credential_parameter_is_redacted() -> None:
+    """X-Amz-Credential was unasserted; narrowing the regex left the suite green."""
+    url = (
+        "https://bucket.example/o?X-Amz-Credential="
+        + "AKIA"
+        + "EXAMPLE%2F20260808&X-Amz-Expires=900"
+    )
+    out = redact({"url": url})["url"]
+    assert "" + "AKIA" + "EXAMPLE" not in out
+    assert "X-Amz-Expires=900" in out
+
+
+def test_individually_required_exact_keys_match() -> None:
+    """Each of these was removable without failing a test.
+
+    None substring-matches another rule, so deleting one silently reopened a
+    bypass. Assert them by name.
+    """
+    for key in ("client_certificate_data", "ssh_authorized_keys", "client_key_data", "kubeconfig"):
+        assert redact({key: "MATERIAL"})[key] == "<redacted>", key

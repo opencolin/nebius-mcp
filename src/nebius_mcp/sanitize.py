@@ -86,7 +86,12 @@ _SENSITIVE_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-            r"(?:.*?-----END [A-Z ]*PRIVATE KEY-----)?",
+            # Consume to the END marker, or to the end of the string when there
+            # isn't one. The optional-group form left the body of a truncated
+            # block in the clear: only the header matched, and the key material
+            # after it survived. Truncation is not hypothetical — capped error
+            # strings and log tails are exactly where a half a PEM shows up.
+            r"[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)",
             re.DOTALL,
         ),
         "<redacted>",
