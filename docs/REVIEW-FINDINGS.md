@@ -28,8 +28,16 @@ uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
 uv run --directory /path/to/nebius-mcp nebius-mcp
 ```
 
-**Fix:** document the git-based invocation now; publish to PyPI and switch the
-docs back. Tracked as a v0.2.0 item.
+**Status:** the README now documents the git-based invocation, which is
+verified working. `.github/workflows/release.yml` builds, checks metadata,
+smoke-tests the built wheel, and publishes on a `v*` tag via PyPI Trusted
+Publishing.
+
+**Remaining, and only the repo owner can do it:** register the trusted
+publisher at https://pypi.org/manage/account/publishing/ with project
+`nebius-mcp`, owner `opencolin`, repository `nebius-mcp`, workflow
+`release.yml`, environment `pypi`. Then tag a release. Until that is done the
+git URL stays the only install path.
 
 **Found by:** querying the PyPI JSON API for the name the README tells people
 to install.
