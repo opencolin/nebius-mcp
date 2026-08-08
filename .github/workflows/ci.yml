@@ -45,6 +45,9 @@ jobs:
       - name: docs links
         run: uv run --python ${{ matrix.python }} python scripts/check_docs_links.py
 
+      - name: release hygiene
+        run: uv run --python ${{ matrix.python }} python scripts/check_release_hygiene.py
+
   security-scan:
     name: security scan
     runs-on: ubuntu-latest
