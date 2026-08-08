@@ -201,7 +201,8 @@ def register(app: FastMCP) -> None:
 
         client: Any = service(catalog.client_class(resource_type))
         resp = await safe(client.list(request_cls(**kwargs)))
-        items = [safe_proto(it) for it in (getattr(resp, "items", None) or [])]
+        collection = catalog.list_items_field(resource_type) or "items"
+        items = [safe_proto(it) for it in (getattr(resp, collection, None) or [])]
         return wrap(
             {
                 "resource_type": resource_type,

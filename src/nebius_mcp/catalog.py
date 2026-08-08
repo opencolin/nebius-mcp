@@ -383,6 +383,45 @@ def supports(key: str, verb: str) -> bool:
     return verb in verbs(key)
 
 
+@cache
+def list_items_field(key: str) -> str | None:
+    """Name of the repeated field holding results in this resource's list response.
+
+    Most services call it ``items``, but not all: managed PostgreSQL returns
+    ``clusters`` and ``backups``, and OperationService returns ``operations``.
+    Assuming ``items`` makes those three return an empty list, which is
+    indistinguishable from an account that genuinely has none — a wrong answer
+    that looks like a correct one.
+
+    Returns None if no collection field can be identified.
+    """
+    method = getattr(client_class(key), "list", None)
+    if method is None:
+        return None
+
+    alias = getattr(method, "__annotations__", {}).get("return")
+    if not isinstance(alias, str):
+        return None
+
+    # Return annotation is Request[<Req>, <Resp>]; the response alias is last.
+    response_aliases = re.findall(r"_NebiusType_[a-z0-9_]+_[A-Za-z0-9]+_[0-9a-f]{8}", alias)
+    if not response_aliases:
+        return None
+    response_cls = _resolve_alias(response_aliases[-1])
+    if response_cls is None:
+        return None
+
+    try:
+        fields = list(response_cls._public_fields_by_python_name())  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - generated classes all expose this
+        return None
+
+    if "items" in fields:
+        return "items"
+    candidates = [f for f in fields if f != "next_page_token"]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def describe(spec: ResourceSpec) -> dict[str, object]:
     """Machine-readable summary used by ``nebius_list_resource_types``."""
     return {

@@ -60,6 +60,34 @@ either confirm the formats against the API and wire them in, or delete them.
 **Found by:** grepping for references to every public helper, rather than
 assuming exported functions are used.
 
+### R-008 — Generic list returned nothing for three resource types
+
+**Severity:** high. Silently wrong results.
+
+`nebius_resource_list` read the response's `items` field. Three services name
+that collection after the resource instead:
+
+| Resource | Field |
+|---|---|
+| `msp.postgresql_cluster` | `clusters` |
+| `msp.postgresql_backup` | `backups` |
+| `common.operation` | `operations` |
+
+Listing any of those returned `{"items": []}` — indistinguishable from an
+account that genuinely has none. A wrong answer that looks like a correct one
+is worse than an error, because nothing prompts anyone to check.
+
+**Fix:** `catalog.list_items_field` resolves the collection field from the
+response message, preferring `items` and otherwise taking the sole non-token
+field. A test asserts every list-capable resource resolves one, so a new
+service with a different name fails the suite instead of silently returning
+nothing.
+
+**Found by:** the roadmap council's critique pass, which resolved all list
+response messages and compared their fields against what the code assumed.
+None of the existing tests could catch it — they mock the response object, so
+`items` exists because the mock was told to have it.
+
 ## Fixed
 
 ### R-006 — `check_environment` reported credentials that cannot authenticate
