@@ -71,9 +71,12 @@ def check(path: Path) -> list[str]:
             problems.append(f"{rel}: '{file_part}' does not exist")
             continue
 
-        if anchor and resolved.suffix == ".md":
-            if anchor not in anchors_of(resolved.read_text(encoding="utf-8")):
-                problems.append(f"{rel}: '{file_part}' has no anchor '#{anchor}'")
+        if (
+            anchor
+            and resolved.suffix == ".md"
+            and anchor not in anchors_of(resolved.read_text(encoding="utf-8"))
+        ):
+            problems.append(f"{rel}: '{file_part}' has no anchor '#{anchor}'")
 
     return problems
 

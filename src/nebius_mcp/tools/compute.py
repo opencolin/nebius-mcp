@@ -445,8 +445,12 @@ def register(app: FastMCP) -> None:
             SourceImageFamily,
         )
 
-        # Validate before issuing token (so the preview doesn't expose what
-        # would have been a guaranteed-fail request).
+        # Mode first: in read-only mode the answer is "write mode is disabled",
+        # not a complaint about arguments that were never going to be used.
+        require_write("compute_create_instance")
+
+        # Then validate, before issuing a token, so the preview never hands back
+        # a token for a request that is guaranteed to fail.
         validate_disk_type(boot_disk_type)
         size_bytes = gib_to_bytes(boot_disk_size_gib)
         validate_boot_disk_size(size_bytes, image_family=image_family)
@@ -499,8 +503,6 @@ def register(app: FastMCP) -> None:
         )
         if gate is not None:
             return gate  # type: ignore[return-value]
-
-        require_write("compute_create_instance")
 
         boot_disk = AttachedDiskSpec(
             attach_mode=AttachedDiskSpec.AttachMode.READ_WRITE,
