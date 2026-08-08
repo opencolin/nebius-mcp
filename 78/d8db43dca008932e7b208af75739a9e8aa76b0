@@ -1,0 +1,19 @@
+docs/HANDOFF.md
+  s_c2c61c647c9194::t_91a7a68b93d0e6 6,35,37-38,40-44,46-49,51-54,56-60,70-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "78d8db43dca008932e7b208af75739a9e8aa76b0",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
