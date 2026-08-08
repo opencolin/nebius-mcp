@@ -1,0 +1,23 @@
+src/nebius_mcp/sanitize.py
+  s_c2c61c647c9194::t_f4c4cd6a547036 89-94
+docs/REVIEW-FINDINGS.md
+  s_c2c61c647c9194::t_eff067c67d5c27 91-116
+tests/unit/test_sanitize.py
+  s_c2c61c647c9194::t_1f23a5671a7d27 200-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "42a8d592f525d842a02022153f6ceec763656f87",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
