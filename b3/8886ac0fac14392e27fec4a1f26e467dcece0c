@@ -1,0 +1,23 @@
+src/nebius_mcp/audit.py
+  s_c2c61c647c9194::t_3951cee2d83c94 30,40-45
+  s_c2c61c647c9194::t_854b3f144d0da5 14
+tests/unit/test_audit_stream.py
+  s_c2c61c647c9194::t_1f55131b7ab7e4 33
+  s_c2c61c647c9194::t_61c89b8c41d49f 1-32,34-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "b38886ac0fac14392e27fec4a1f26e467dcece0c",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
