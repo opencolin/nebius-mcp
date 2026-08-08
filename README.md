@@ -308,9 +308,13 @@ telling the model that resource names, tags, and descriptions are untrusted
 input, not instructions. Token-shaped values are stripped recursively. This is
 the mitigation for indirect prompt injection through your own cloud metadata.
 
-**Secrets stay behind one door.** The generic tools cannot reach any
+**Secrets stay behind three doors.** The generic tools cannot reach any
 secret-returning API. `secrets_reveal_payload` is the only tool that returns
-plaintext, and it is annotated so clients can prompt before it runs.
+plaintext, and it needs all of: write mode, `NEBIUS_MCP_ALLOW_SECRET_REVEAL=1`,
+and the two-step confirm token. It is annotated `readOnlyHint: false,
+destructiveHint: true` — not because it changes anything, but because those are
+the two fields clients read when deciding what to auto-approve, and a plaintext
+secret must never leave without a prompt.
 
 **You can pin the tool surface.** `get_manifest` returns a SHA-256 over every
 tool name, description, annotation, and schema. Pin it and compare between
@@ -349,6 +353,7 @@ precisely if a profile exists but cannot authenticate.
 | `NEBIUS_IAM_TOKEN` | — | Bearer token; highest precedence |
 | `NEBIUS_PROFILE` | — | Profile name in `~/.nebius/config.yaml` |
 | `NEBIUS_MCP_MODE` | `read` | Set to `write` to allow mutations |
+| `NEBIUS_MCP_ALLOW_SECRET_REVEAL` | unset | Set to `1` to let `secrets_reveal_payload` return plaintext secrets. Write mode and the confirm token are still required |
 | `NEBIUS_MCP_LOG_LEVEL` | `INFO` | Audit log level on stderr |
 
 ---
@@ -369,7 +374,11 @@ hash.
 | **AI Endpoints** | `ai_list_endpoints`, `ai_get_endpoint`, `ai_get_endpoint_by_name` | `ai_start_endpoint`, `ai_stop_endpoint` | `ai_delete_endpoint` |
 | **VPC** | `vpc_list_networks`, `vpc_get_network`, `vpc_list_subnets`, `vpc_get_subnet`, `vpc_list_security_groups`, `vpc_get_security_group`, `vpc_list_allocations`, `vpc_get_allocation` | — | `vpc_delete_network`, `vpc_delete_subnet`, `vpc_delete_security_group`, `vpc_delete_allocation` |
 | **Registry** | `registry_list`, `registry_get`, `registry_list_images`, `registry_get_image` | — | `registry_delete`, `registry_delete_image` |
-| **Secrets** | `secrets_list`, `secrets_get`, `secrets_list_versions`, `secrets_reveal_payload` | — | — |
+| **Secrets** | `secrets_list`, `secrets_get`, `secrets_list_versions` | — | `secrets_reveal_payload` |
+
+The columns are the tools' MCP annotations, not their effect on your account.
+`secrets_reveal_payload` destroys nothing; it sits in the last column because it
+must be gated like a delete. See [Safety model](#safety-model).
 
 ### Generic tools (6) — everything else
 
@@ -488,6 +497,15 @@ response's `_note` says which parent that resource wanted. Call
 
 Working as intended. Set `NEBIUS_MCP_MODE=write` in your client's `env` block
 and restart the server. See [Write mode](#write-mode).
+
+</details>
+
+<details>
+<summary>"secrets_reveal_payload: disabled"</summary>
+
+Also working as intended. Revealing a plaintext secret needs a second opt-in
+beyond write mode: add `"NEBIUS_MCP_ALLOW_SECRET_REVEAL": "1"` to your client's
+`env` block and restart. Prefer `secrets_get`, which returns metadata only.
 
 </details>
 

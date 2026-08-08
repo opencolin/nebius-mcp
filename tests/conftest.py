@@ -24,5 +24,10 @@ def _isolate_nebius_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         "nebius_mcp.auth.DEFAULT_CONFIG_PATH",
         tmp_path / "nonexistent" / "config.yaml",
     )
-    for var in ("NEBIUS_IAM_TOKEN", "NEBIUS_PROFILE", "NEBIUS_MCP_MODE"):
+    for var in (
+        "NEBIUS_IAM_TOKEN",
+        "NEBIUS_PROFILE",
+        "NEBIUS_MCP_MODE",
+        "NEBIUS_MCP_ALLOW_SECRET_REVEAL",
+    ):
         monkeypatch.delenv(var, raising=False)
