@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, cast
 
 from google.protobuf.json_format import MessageToDict
 
@@ -197,3 +197,37 @@ def safe_proto(message: Any) -> dict[str, Any]:
     """Convert a single wrapped proto to a redacted dict."""
     redacted: dict[str, Any] = redact(proto_to_dict(message))
     return redacted
+
+
+# Secret assignments inside prose. ``redact`` only sees a field name when the
+# payload is a mapping; an exception message is one flat string, so
+# "secret_key=abc" carries no key for it to match. The value runs to the next
+# separator, which keeps "authorization=Bearer <jwt>" from swallowing the rest
+# of the message.
+_ASSIGNMENT_PATTERN = re.compile(
+    r"([A-Za-z0-9_.-]*"
+    r"(?:secret|token|password|passwd|credential|api[_-]?key|private[_-]?key|authorization)"
+    r"[A-Za-z0-9_.-]*)"
+    r"(\s*[:=]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|[^\s,;&)\}\]]+)",
+    re.IGNORECASE,
+)
+
+TRUNCATION_MARKER = "...[truncated]"
+
+
+def redact_text(text: str, *, max_chars: int | None = None) -> str:
+    """Redact secrets from free-form text such as an exception message.
+
+    Truncation happens after redaction, never before: cutting first can split a
+    token so it no longer matches its pattern, which leaves the head of a
+    secret in the output. ``max_chars`` bounds the returned text including the
+    truncation marker.
+    """
+    substituted = _ASSIGNMENT_PATTERN.sub(r"\1\2<redacted>", text)
+    # redact() is typed for arbitrary JSON trees; a str in returns a str out.
+    out = cast(str, redact(substituted))
+    if max_chars is not None and len(out) > max_chars:
+        keep = max(max_chars - len(TRUNCATION_MARKER), 0)
+        out = out[:keep] + TRUNCATION_MARKER
+    return out
