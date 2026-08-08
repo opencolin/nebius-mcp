@@ -1,0 +1,51 @@
+tests/unit/test_tools_generic.py
+  s_c2c61c647c9194::t_06ba6e54eef450 1-5,7-30,35-65,67-91,93-102,106-145,147-175
+  s_c2c61c647c9194::t_11681050423542 31-34
+  s_c2c61c647c9194::t_f061bf60e39fa9 103-105
+  s_c2c61c647c9194::t_30f978df768274 6,66,92,146
+pyproject.toml
+  s_c2c61c647c9194::t_638593b76c8753 24
+src/nebius_mcp/sanitize.py
+  s_c2c61c647c9194::t_5e180919a0c314 17
+  s_c2c61c647c9194::t_99d6c8c6bf3917 67,69-79,81-85
+src/nebius_mcp/tools/secrets.py
+  s_c2c61c647c9194::t_50bb94587394bc 164-166
+CHANGELOG.md
+  s_c2c61c647c9194::t_b80aed9729b896 9-41
+tests/unit/test_catalog.py
+  s_c2c61c647c9194::t_0ad36443635f49 1-72
+tests/conftest.py
+  s_c2c61c647c9194::t_6751fbe964f24a 1-28
+src/nebius_mcp/server.py
+  s_c2c61c647c9194::t_f7c01d728bcb42 41,51
+src/nebius_mcp/catalog.py
+  s_c2c61c647c9194::t_660ac315771f23 1-28,30-37,48-76,83-103,107-321,323-355,357-366,368-375,377-394
+  s_c2c61c647c9194::t_e7be796288d036 29,77-82,322,356,367,376
+  s_c2c61c647c9194::t_19aa0c1b60573a 38-47,104-106
+src/nebius_mcp/tools/generic.py
+  s_c2c61c647c9194::t_de5c57e4dfd5bf 1-196,198-223,225-256,258-302,304-332,334-336
+  s_c2c61c647c9194::t_8db68974601fbc 197,224,257,303,333
+README.md
+  s_c2c61c647c9194::t_fbe21b98e58668 107-110
+  s_c2c61c647c9194::t_808e38f97a5c08 123-153
+  s_c2c61c647c9194::t_e4158175f9ba3e 168
+  s_c2c61c647c9194::t_1017a51de32690 6-9
+uv.lock
+  s_c2c61c647c9194::t_55a20e0dcf030d 1172,1183,1185,1187,1212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "264f873c3d0e9e71c8bd1d5db01051a042e5da1a",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
