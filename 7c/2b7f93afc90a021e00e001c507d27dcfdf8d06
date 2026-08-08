@@ -1,0 +1,30 @@
+src/nebius_mcp/server.py
+  s_c2c61c647c9194::t_a8dc7ef616d0a5 59-83,88-104
+  s_c2c61c647c9194::t_9697d619e5d0d8 105-106
+scripts/check_docs_links.py
+  s_c2c61c647c9194::t_709fe05d2168a0 1-100
+.github/workflows/ci.yml
+  s_c2c61c647c9194::t_24841086eff184 45-47
+README.md
+  s_c2c61c647c9194::t_03186536107155 418,420-425,449
+  s_c2c61c647c9194::t_23915783194944 3,5-8,10-12,14,16-19,21-23,25,28,31-35,38-39,42,44-45,55,62-123,126-130,132-137,144,153-299,301-322,325,328-355,358-359,361,376-380,384-404,406,408-412,414,416,427-428,430,433-448,450-537,539,541,544,547,550-559,564-565
+  s_c2c61c647c9194::t_f9240a69e59877 47,49-51,54,56-61
+tests/unit/test_server.py
+  s_c2c61c647c9194::t_03186536107155 5-7,14-27,54-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "7c2b7f93afc90a021e00e001c507d27dcfdf8d06",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
