@@ -1,0 +1,28 @@
+.github/workflows/ci.yml
+  s_c2c61c647c9194::t_997c38975e122b 50-55
+tests/unit/test_tools_generic.py
+  s_c2c61c647c9194::t_091776c467386f 118-121,179-226
+CHANGELOG.md
+  s_c2c61c647c9194::t_2ec221cad13a9f 31-46,48-53
+src/nebius_mcp/tools/generic.py
+  s_c2c61c647c9194::t_4acab523201a3b 319-323,333-339,349,351-365
+  s_c2c61c647c9194::t_d4d382c12d75c8 291-296
+  s_c2c61c647c9194::t_51312cfffec9ed 48,52-55
+  s_c2c61c647c9194::t_d4d8c856b5086b 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "28695ed5e625a9c111866caa8bef47d3552f9262",
+  "prompts": {},
+  "sessions": {
+    "s_c2c61c647c9194": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d4037e-2d15-4e09-9157-fc6ff1d5d2ee",
+        "model": "claude-opus-5"
+      },
+      "human_author": "opencolin <colin@lowenberg.org>"
+    }
+  }
+}
