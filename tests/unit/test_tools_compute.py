@@ -573,6 +573,157 @@ async def test_create_instance_preview_bounds_a_huge_key_comment(
     assert len(rendered) < 2000
 
 
+# --- The cloud-config document -------------------------------------------
+#
+# compute_create_instance used to build this document by interpolating the key
+# into a block sequence as a bare scalar. That made the document's *meaning*
+# depend on the key's comment: "- key note: hi" is a YAML mapping, not a
+# string, so the key was never installed and the VM booted unreachable while
+# the dry run showed a normal fingerprint. The document is now serialized, and
+# these tests pin both halves of that: an ordinary key must produce byte-for-
+# byte what it produced before, and every key that validation accepts must come
+# back out of the parser as the same string.
+#
+# The matrix below is wider than the characters that actually broke the
+# f-string. A key's scalar always starts with its type, so YAML indicators that
+# only matter in first position -- '&', '*', '!', '%', '[', '{', ',' -- are
+# inert in a comment and survived interpolation; only ": " and " #" flipped the
+# parse. They are here as the *other* guard: the fix was to emit safely, not to
+# start refusing comments (R-016 in docs/REVIEW-FINDINGS.md), and narrowing
+# _validate_ssh_public_key to reject any of them fails these cases loudly.
+
+_BASE_KEY = " ".join(KEY_ALICE.split()[:2])
+
+
+def _legacy_cloud_init(key: str) -> str:
+    """The exact document the f-string version emitted for ``key``."""
+    return (
+        "#cloud-config\n"
+        "users:\n"
+        "  - name: nebius\n"
+        "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+        "    shell: /bin/bash\n"
+        "    ssh_authorized_keys:\n"
+        f"      - {key}\n"
+    )
+
+
+async def _cloud_init_for(create_client: MagicMock, key: str) -> str:
+    """Run the create through its confirm gate and return the user-data it sent."""
+    app = _build_app()
+    async with Client(app) as c:
+        first = await c.call_tool("compute_create_instance", _create_args(key))
+        token = first.data["confirm_token"]
+        await c.call_tool("compute_create_instance", _create_args(key, confirm_token=token))
+
+    assert create_client.create.call_count == 1
+    user_data = create_client.create.call_args.args[0].spec.cloud_init_user_data
+    assert isinstance(user_data, str)
+    return user_data
+
+
+def _installed_keys(user_data: str) -> Any:
+    """Parse the document the way cloud-init does and return the authorized-key list."""
+    import yaml
+
+    return yaml.safe_load(user_data)["users"][0]["ssh_authorized_keys"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_init_layout_is_byte_identical_for_a_plain_key(
+    create_client: MagicMock,
+) -> None:
+    """A normal VM must get exactly the user-data it got before the serializer."""
+    user_data = await _cloud_init_for(create_client, KEY_ALICE)
+    assert user_data == _legacy_cloud_init(KEY_ALICE)
+
+
+@pytest.mark.parametrize(
+    ("label", "comment"),
+    [
+        ("no-comment", ""),
+        ("plain", "alice@laptop"),
+        # The reported failure: "- key note: hi" is a mapping, not a string.
+        ("colon-space", "alice@laptop note: hi"),
+        ("hash", "alice@laptop #1"),
+        ("single-quote", "alice's laptop"),
+        ("double-quote", 'alice "the admin"'),
+        ("bracket", "alice[laptop]"),
+        ("brace", "alice{laptop}"),
+        ("comma", "alice,laptop"),
+        ("ampersand", "&anchor"),
+        ("asterisk", "*alias"),
+        ("bang", "!tag"),
+        ("percent", "%directive"),
+        ("at", "@laptop"),
+        ("all-digits", "20250101"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cloud_init_installs_the_key_verbatim(
+    create_client: MagicMock, label: str, comment: str
+) -> None:
+    """Every key validation accepts must parse back out as that same string."""
+    key = f"{_BASE_KEY} {comment}".strip()
+
+    installed = _installed_keys(await _cloud_init_for(create_client, key))
+
+    assert isinstance(installed, list), label
+    assert len(installed) == 1, label
+    # str, not dict: the bug did not raise, it changed the type.
+    assert isinstance(installed[0], str), f"{label}: parsed as {type(installed[0]).__name__}"
+    assert installed[0] == key, label
+
+
+@pytest.mark.asyncio
+async def test_cloud_init_user_block_survives_an_awkward_key(
+    create_client: MagicMock,
+) -> None:
+    """Quoting the key must not disturb the account it is being installed for."""
+    key = f"{_BASE_KEY} alice@laptop note: hi"
+
+    import yaml
+
+    parsed = yaml.safe_load(await _cloud_init_for(create_client, key))
+
+    assert parsed == {
+        "users": [
+            {
+                "name": "nebius",
+                "sudo": "ALL=(ALL) NOPASSWD:ALL",
+                "shell": "/bin/bash",
+                "ssh_authorized_keys": [key],
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_cloud_init_starts_with_the_cloud_config_marker(
+    create_client: MagicMock,
+) -> None:
+    """cloud-init ignores user-data whose literal first line is not this comment."""
+    key = f"{_BASE_KEY} alice@laptop note: hi"
+
+    user_data = await _cloud_init_for(create_client, key)
+
+    assert user_data.split("\n")[0] == "#cloud-config"
+
+
+@pytest.mark.asyncio
+async def test_cloud_init_does_not_fold_a_long_key_across_lines(
+    create_client: MagicMock,
+) -> None:
+    """A serializer wraps long scalars by default; a key split over lines is unreadable."""
+    key = f"{_BASE_KEY} " + " ".join(["comment"] * 40)
+
+    user_data = await _cloud_init_for(create_client, key)
+
+    assert f"      - {key}\n" in user_data
+    assert user_data == _legacy_cloud_init(key)
+    assert _installed_keys(user_data) == [key]
+
+
 @pytest.mark.asyncio
 async def test_wait_and_timeout_are_outside_the_confirm_binding(
     create_client: MagicMock,

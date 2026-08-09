@@ -43,59 +43,172 @@ git URL stays the only install path.
 **Found by:** querying the PyPI JSON API for the name the README tells people
 to install.
 
-### R-008 — Generic list returned nothing for three resource types
+### R-015 — Two attempts to unify the sanitizer's two paths, both reverted
 
-**Severity:** high. Silently wrong results.
+**Severity:** low as it stands — the tree is back at the pre-attempt behaviour
+plus one narrow fix. Recorded because the next person to look at this rule will
+have the same idea, and the two ways it failed are not obvious in advance.
 
-`nebius_resource_list` read the response's `items` field. Three services name
-that collection after the resource instead:
+`redact` (every successful API response, via `safe_proto`) and `redact_text`
+(exception text) do not sanitize equally. The rule that catches `name=secret`
+inside a flat string — `_ASSIGNMENT_PATTERN` when this entry was written, today
+`_redact_assignments` (`src/nebius_mcp/sanitize.py:488`) — runs only in
+`redact_text` (`src/nebius_mcp/sanitize.py:517`). The obvious repair is to move
+it into `_redact_value` (`src/nebius_mcp/sanitize.py:262`) so both paths share
+one implementation. That was attempted twice and reverted twice.
 
-| Resource | Field |
+**Attempt 1** moved the existing regex into `_redact_value` unchanged. Its name
+group is `[A-Za-z0-9_.-]*(?:secret|token|…)[A-Za-z0-9_.-]*` — an unbounded
+character class in front of a literal alternation, which backtracks
+quadratically. Harmless while it only saw exception strings; on the success
+path it saw every field of every resource, and the module docstring says
+outright that nothing caps response size. Measured: a 64 KB base64url field
+took 69.6 seconds. `redact` is synchronous and called from async tool handlers,
+so that is a full event-loop stall. It also mangled values the model has to act
+on — `https://token-service.internal:8443/healthz` lost its port, and
+`cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2` lost its tag — because the
+name group matches a keyword anywhere inside a hostname or image name.
+
+**Attempt 2** rebuilt the rule as a hand-written linear scanner with the
+keyword matched as a whole name segment. It fixed the reported cases and was
+mutation-tested, and it was still wrong in two ways:
+
+- The quadratic cost moved rather than disappeared. The value alternative
+  `[^\s,;&)}\]]+` excludes neither `:` nor `=`, and a rejected candidate
+  advanced the cursor by only the name length, so a whitespace-free token was
+  rescanned once per candidate. `redact` on 128 KB of `"a:"` repeated took
+  11.9 seconds — worse than what it replaced.
+- Matching the keyword as a whole segment silently *narrowed* detection.
+  `PGPASSWORD=`, `dbpassword=`, `authtoken=`, `apitoken=`, `rootpassword=` and
+  `vaulttoken=` were all caught before and leaked after. A change made for cost
+  and false positives quietly reduced what the sanitizer recognised, and no
+  test noticed.
+
+What shipped instead is the narrow fix: `X-Amz-Security-Token` added to the
+presigned-URL value pattern (`src/nebius_mcp/sanitize.py:140`), which closes the
+originally reported leak — an STS session token returned in the clear on the
+success path while being redacted on the error path — with no blast radius.
+
+**The asymmetry itself remains open.** A third attempt has since landed, and it
+is worth being precise about what it did and did not do. It did *not* move the
+rule into `_redact_value`; it rewrote the rule in place, closing R-012 on the
+error path, and it deliberately left `redact` alone for exactly the reason
+attempt 1 failed — on the success path the rule still strips the port off
+`token-service.internal:8443` and the tag off `my-secrets-app:v1.4.2`. So a
+credential written as `name=value` inside a string is still removed from a
+failure and returned from a success. That trade has not been beaten; it has
+been sidestepped.
+
+Both things this entry asked for were done, and both paid. A cost benchmark
+across string shapes caught a fresh quadratic pattern in the new work before
+review did — written in attempt 1's exact spelling,
+`[A-Za-z][A-Za-z0-9+.-]*://`. And an explicit before/after diff of which
+credential names are still recognised (44 shapes, re-verified against a live
+import of the previous module) is precisely what would have caught attempt 2's
+silent narrowing; a mutation reinstating attempt 2's whole-segment matching now
+fails seventeen named tests. Both artefacts ship as tests, so a fourth attempt
+starts with them rather than rebuilding them.
+
+For whoever tries that fourth attempt: the remaining problem is no longer cost,
+and no longer fidelity. It is that the rule's *value* alternative cannot tell a
+secret from a port number or an image tag, and no amount of benchmarking fixes
+that. Solve that before moving anything into `redact`.
+
+**Found by:** benchmarking the landed change rather than reading it — both
+attempts passed their own suites, ruff, and mypy strict, and attempt 2's suite
+included a linearity test that its own blowup shape evaded.
+
+## Fixed
+
+### R-020 — An accepted SSH key could be silently mangled by the cloud-config
+
+**Severity:** medium. Not a security hole — the failure is toward *no* access,
+never extra access — but it was silent, and the instance is a GPU box the user
+is paying for and cannot log into.
+
+`compute_create_instance` built its cloud-config by interpolating the key into
+a YAML list item:
+
+        "    ssh_authorized_keys:\n"
+        f"      - {ssh_key}\n"
+
+R-014 closed the *injection* here by validating the input:
+`_validate_ssh_public_key` (`src/nebius_mcp/tools/compute.py:110`) refuses any
+character outside printable ASCII 0x20–0x7E and anything that does not parse as
+one OpenSSH public key line. That guard is right and it holds. It does not
+address this, because the trailing comment field of an OpenSSH key is free
+printable text, and two entirely legal comment shapes changed what the guest's
+YAML parser read back:
+
+| Comment contains | What `yaml.safe_load` returned for the list item |
 |---|---|
-| `msp.postgresql_cluster` | `clusters` |
-| `msp.postgresql_backup` | `backups` |
-| `common.operation` | `operations` |
+| `: ` (colon-space) | a single-key **mapping**, not the key string |
+| ` #` (space-hash) | the key **truncated** at the `#` |
 
-Listing any of those returned `{"items": []}` — indistinguishable from an
-account that genuinely has none. A wrong answer that looks like a correct one
-is worse than an error, because nothing prompts anyone to check.
+Nothing reported it. The validator accepted, the confirm preview showed a
+correct `SHA256:` fingerprint — because `_ssh_key_summary`
+(`src/nebius_mcp/tools/compute.py:245`) fingerprints the *key*, not the
+rendered document — the API accepted the user-data, and the instance booted
+without the key installed. This log has said twice that a wrong answer which
+looks like a correct one is the worse failure (R-008, R-016); this was that,
+one layer down.
 
-**Fix:** `catalog.list_items_field` resolves the collection field from the
-response message, preferring `items` and otherwise taking the sole non-token
-field. A test asserts every list-capable resource resolves one, so a new
-service with a different name fails the suite instead of silently returning
-nothing.
+**Fix:** `_cloud_init_document` (`src/nebius_mcp/tools/compute.py:171`)
+serializes the document with PyYAML instead of formatting it, prepending the
+literal `#cloud-config` line the serializer will not emit. A comment containing
+`: ` or ` #` now round-trips out of `yaml.safe_load` as the same string it went
+in as, verified for fifteen comment shapes.
 
-**Found by:** the roadmap council's critique pass, which resolved all list
-response messages and compared their fields against what the code assumed.
-None of the existing tests could catch it — they mock the response object, so
-`items` exists because the mock was told to have it.
+**Why the serializer and not explicit quoting.** Single-quoting the scalar with
+`''` doubling is total over the accepted input domain and would have been
+correct. It was rejected because it changes the emitted bytes for *every* key,
+including the ordinary ones, and an existing test pins that a key's interior
+spacing survives into the document. That test does not encode wrong behaviour,
+so it was not touched. PyYAML's minimal quoting leaves a plain key bare, which
+keeps the emitted document byte-identical for any key that needs no quoting —
+pinned against the old literal template — and handles the whole class rather
+than the two instances found.
 
-### R-009 — Truncated PEM blocks leaked their key material
+**What the serializer had to be told, because its defaults are wrong here.**
+Line folding is disabled (`width` set enormous): PyYAML's default 80-column
+folding breaks a long key across lines. `sort_keys=False`, or the user block's
+keys get alphabetized. And a `SafeDumper` subclass
+(`src/nebius_mcp/tools/compute.py:212`) indents block sequences, because
+PyYAML's un-indented default changes the emitted bytes for keys that worked
+before. Each of those three is a separate mutation that fails a named test.
 
-**Severity:** high.
+**R-016's lesson was the live risk here, and it was the tempting fix.**
+Refusing comments that contain a YAML metacharacter would have closed the bug
+by rejecting keys OpenSSH itself accepts — a validator firing on correct input,
+which R-016 records as worse than no validator at all. That mutation was run:
+fixing it that way fails fourteen tests. `_validate_ssh_public_key`'s refusals
+were kept exactly as they were, and nothing new is rejected.
 
-The PEM redaction pattern made the END marker an optional trailing group, so
-a block without one matched only its header and everything after it survived:
+Three comments that the fix made false were rewritten rather than left:
+`_validate_ssh_public_key`'s docstring (a newline can no longer break out of
+the list item — the serializer quotes it; the refusal now rests on
+`authorized_keys` being line-based in the guest), its non-printable-ASCII error
+message, and the inline comment above the call site.
 
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA..."
-    -> "<redacted>\nMIIEowIBAAKCAQEA..."
+**One dependency debt this exposed and did not pay.** PyYAML is not declared in
+`pyproject.toml`, whose `[project.dependencies]` lists only `fastmcp`,
+`nebius`, `pydantic` and `structlog`. It arrives transitively, and
+`src/nebius_mcp/auth.py:94` already imports it at runtime on the documented
+`~/.nebius/config.yaml` path, so the project depends on it in practice already.
+This widens that to a second call site. The import is lazy, matching `auth.py`,
+so a missing PyYAML fails this one tool at call time rather than stopping the
+server from importing — but `pyyaml>=6,<7` belongs in the dependency list and
+is not there yet.
 
-The code comment claimed the opposite — that the optional marker was there so
-truncated blocks would still match. Truncation is not hypothetical: capped
-error strings and log tails are exactly where half a PEM appears, and the
-error path was routed through the sanitizer in the same release.
+**Found by:** an implementation round against this module asking what else the
+*validated* value can contain — the same question that surfaced R-014, asked
+one layer further down. R-014 asked what an unvalidated key could do to the
+document; this asked what a legal key still does to it.
 
-**Fix:** consume to the END marker or to end-of-string.
-
-**Found by:** the fan-out's adversarial verification pass, using mutation
-testing — it also showed that removing `client_certificate_data`,
-`ssh_authorized_keys`, the hyphen separator, or the `X-Amz-Credential`
-alternative each left the whole suite green. Tests now assert each
-individually.
-
-**The lesson:** a passing suite says nothing about which rules it actually
-constrains. Mutating the code and re-running is what tells you.
+**The lesson, and it is now three entries deep:** R-014, R-016 and this one all
+come from `compute.py` treating a cloud-config document as a string. Validating
+the string harder is what R-014 did, and what R-016 shows the limit of. The
+document wanted building, not formatting.
 
 ### R-011 — The audit log cannot tell a previewed delete from an executed one
 
@@ -130,23 +243,71 @@ paths it took.
 tampering" — and asking which specific questions the log can actually answer.
 "Was this instance deleted?" was not one of them.
 
+**Resolution: a third `outcome`, reported by the code that knows.** The record
+now carries `previewed` alongside `ok` and `error`. The middleware opens a
+scope around every tool call (`src/nebius_mcp/audit.py:75`) and reads the flag
+back after the tool returns (`src/nebius_mcp/audit.py:209`);
+`preview_or_execute` calls `mark_previewed` (`src/nebius_mcp/audit.py:107`) on
+its preview branch and only there (`src/nebius_mcp/confirm.py:156`). Nothing
+sniffs the returned payload, which is what the entry above asked for.
+
+**The one design choice worth explaining, because it looks backwards.** The
+information flows *outward*: the middleware installs a mutable cell in a
+`ContextVar` and the inner code mutates it, rather than the more obvious inner
+`set` and outer `get`. An inner `ContextVar.set` lands on a *copy* of the
+context the moment any layer runs the tool in a fresh `asyncio.Task` or a
+worker thread, and the preview would then be recorded as `ok` — silently, and
+only under a change nobody made for this reason. A copied context still shares
+the object a var points at, so mutating a cell survives that hop. It also makes
+the reset structural: each call gets its own cell and the var is restored in a
+`finally`, instead of the middleware having to remember to clear it.
+
+The flag lives in `audit.py` rather than `confirm.py` because audit owns the
+record vocabulary, and `confirm` imports it lazily inside the preview branch.
+
+**The mitigating detail above survives, and is now pinned.** The middleware
+still hashes the raw argument dict including `confirm_token`, so the preview
+and the confirming call still differ by `args_hash` as well as by `outcome`.
+`test_the_two_records_still_differ_by_args_hash` fails if the middleware is
+mutated to filter `confirm_token` out before hashing — that property was
+asserted in prose by the entry above and by nothing else.
+
+Mutation-tested six ways: forcing `outcome` to `"ok"` unconditionally, dropping
+the `mark_previewed` call, marking *both* branches previewed, skipping the
+`ContextVar` reset, stripping `confirm_token` before hashing, and logging `ok`
+on the exception path each fail named tests. The reset mutation is the
+instructive one — it is inert for the middleware path, because every call
+installs a fresh cell before the tool runs, so the black-box leak test cannot
+see it. Only a white-box test reading the private `_call_flags` catches it, and
+that is the sole reason such a test exists.
+
+**What this does not do.** It says *whether* something executed, not *what* was
+touched: `args_hash` is still opaque and `SECURITY.md` still concedes that
+half. And `previewed` is a self-report, not enforcement — a future destructive
+tool that hand-rolls its own dry-run envelope instead of calling
+`preview_or_execute` would be logged `ok`, and no test fails if it does. There
+is a registry-wide test that every destructive tool is write-gated
+(`tests/unit/test_write_gate_coverage.py`); there is no equivalent asserting
+every destructive tool routes through the confirm gate. That is the gap to
+close next.
+
 ### R-012 — Quoting a field name defeats the in-string assignment rule
 
-**Severity:** medium. Pre-existing; not introduced or closed by the sanitizer
-work in this round, which was scoped to cost and false positives.
+**Severity:** medium. Pre-existing; filed in a round scoped to cost and false
+positives, and closed in the next one.
 
 The sanitizer has two ways to catch `name = secret`. When the payload is a
-mapping, `_is_sensitive_key` (`src/nebius_mcp/sanitize.py:177`) matches the
+mapping, `_is_sensitive_key` (`src/nebius_mcp/sanitize.py:291`) matches the
 dict key. When the secret is *inside a string* — an exception message, a query
 string, a cloud-init fragment quoted into a description — `redact_text`
-(`src/nebius_mcp/sanitize.py:241`) has to find the name itself, with the regex
-at `src/nebius_mcp/sanitize.py:229`.
+(`src/nebius_mcp/sanitize.py:517`) has to find the name itself, which it then
+did with a regex named `_ASSIGNMENT_PATTERN` (since replaced; see the
+Resolution below).
 
-That regex requires the separator to follow the name immediately:
-`[ \t]*[:=][ \t]*` at `src/nebius_mcp/sanitize.py:229`. A quote character sits
-between them in every JSON document, so the candidate never forms. The result
-is an asymmetry sharp enough to be worth stating outright — all four verified
-against the current module:
+That regex required the separator to follow the name immediately:
+`[ \t]*[:=][ \t]*`. A quote character sits between them in every JSON document,
+so the candidate never formed. The result was an asymmetry sharp enough to be
+worth stating outright — all four verified against the module as it stood:
 
 | String | Result |
 |---|---|
@@ -176,17 +337,75 @@ R-015. Every case that rework added, and every case the rule already had,
 writes the assignment unquoted; nobody had asked what the same rule does to
 the quoted spelling of the identical pair.
 
+**Resolution: the regex was replaced by a name-run scanner.** All four rows of
+the table above now redact. `_ASSIGNMENT_PATTERN` is gone. `_redact_assignments`
+(`src/nebius_mcp/sanitize.py:488`) enumerates maximal `[A-Za-z0-9_.-]+` runs
+(`src/nebius_mcp/sanitize.py:369`), tests each run for a credential keyword
+(`src/nebius_mcp/sanitize.py:412`), and matches a bounded tail at the run's
+end. On top of that it skips a closing quote when the same quote opens the name
+(`src/nebius_mcp/sanitize.py:440`), including the backslash-escaped spelling
+gRPC status details arrive in — which is the whole of the reported fix.
+
+**Why a rewrite rather than the one-character widening this entry warned
+about.** The warning was that allowing an optional quote widens the regex, and
+that both previous widenings shipped a quadratic blowup. A run scanner
+sidesteps that trade instead of paying it: a name can only ever be a *whole*
+run, because neither `:` nor `=` is a name character, so the scanner decides
+exactly what the old regex decided while being linear by construction. That
+equivalence was established by differential fuzz rather than by reading — with
+the three deliberate deltas switched off, the scanner is byte-identical to the
+old regex over 30,000 generated strings, 0 mismatches. The fuzz ships as
+`test_the_run_scanner_matches_the_regex_it_replaced`, and it builds its
+reference from the live keyword tuple so it cannot go stale when that tuple
+grows.
+
+**A cost bug nobody had filed, found on the way.** R-015 attributes the
+quadratic blowup to the success path, reasoning that the error path only ever
+sees short exception strings. That reasoning was wrong twice over: error
+strings are attacker-influenceable — a resource name is quoted back verbatim in
+a not-found message — and `redact_text` scans the whole string *before*
+truncating it, so `MAX_ERROR_DETAIL_CHARS` never bounded the work. Measured on
+the pre-fix module: 4 KB of `[A-Za-z0-9_.-]` took 12.8 s, 16 KB of base64url
+took 3.9 s. The same inputs now take 0.11 ms and 0.45 ms. A regression test
+pins linearity across eleven string shapes; restoring the old regex verbatim
+fails it, taking 192 seconds to do so.
+
+**A deliberate narrowing, recorded because it is a real cost.** `_BENIGN_KEYS`
+is now consulted on the text path as well. The effect is that
+`token_expires_at: 2026-08-10T00:00:00Z`, and fourteen other exact names, now
+survive inside an error message where they were previously replaced. That is a
+loss, and it was accepted because the alternative is worse: with the quoted
+spelling finally working, `{"tokens_used": 4096}` in an error message would
+newly be mangled — the exact false positive R-019 spent a round removing from
+the mapping path. Closing one asymmetry must not reintroduce the defect the
+previous round closed.
+
+**Scope, stated because the heading reads broader than the fix.** This is
+closed in `redact_text` only. The assignment rule is still deliberately absent
+from `redact` (`src/nebius_mcp/sanitize.py:306`), so a string *value inside a
+mapping* returned by a successful call — `{"description": "password: hunter2"}`
+— is still returned verbatim; that was re-verified against the current module
+rather than assumed. This is R-015's asymmetry, it remains open, and
+`SECURITY.md` and `tests/unit/test_operation.py` both continue to describe it.
+Do not read this resolution as closing R-015.
+
+Mutation testing earned its place again. The first pass found one invariant
+with no guard behind it — that a redacted value keeps the quotes it arrived in,
+so `{"password": "<redacted>"}` stays parseable JSON — and
+`test_a_redacted_value_keeps_the_quotes_it_arrived_in` exists because that
+mutation survived, not because anyone thought of it in advance.
+
 ### R-013 — Credentials that no rule names at all
 
-**Severity:** medium. Pre-existing, and unchanged by this round.
+**Severity:** medium. Pre-existing when filed; closed in the following round.
 
 R-012 is about a credential whose field name the assignment rule cannot see.
 This is the set where there is no usable field name to begin with, so the only
 thing that could catch them is `_SENSITIVE_VALUE_PATTERNS`
-(`src/nebius_mcp/sanitize.py:85`), which names four shapes: JWT, the `ne1…`
-Nebius prefix, PEM private-key blocks, and three `X-Amz-` query parameters.
-Everything below was confirmed to pass through both `redact` and `redact_text`
-byte-for-byte unchanged.
+(`src/nebius_mcp/sanitize.py:140`), which at the time named four shapes: JWT,
+the `ne1…` Nebius prefix, PEM private-key blocks, and three `X-Amz-` query
+parameters. Everything below was confirmed to pass through both `redact` and
+`redact_text` byte-for-byte unchanged.
 
 **URL userinfo.** The credential sits between `//` and `@`, introduced by a
 colon that belongs to the URL syntax rather than to an assignment:
@@ -227,11 +446,11 @@ cannot be committed.
 
 Azure's `AccountKey=…` is in this group by outcome but not by mechanism, and
 the distinction matters to anyone fixing it. It *is* a well-formed assignment,
-in exactly the `name=value` shape `_ASSIGNMENT_PATTERN`
-(`src/nebius_mcp/sanitize.py:229`) is built for. It survives only because none
-of the keywords in that pattern — `secret`, `token`, `password`, `passwd`,
-`credential`, `api_key`, `private_key`, `authorization` — appears in the name
-`AccountKey`. So a whole connection string is returned intact:
+in exactly the `name=value` shape the in-string assignment rule — then
+`_ASSIGNMENT_PATTERN`, since replaced, see R-012 — is built for. It survives
+only because none of the keywords in that rule — `secret`, `token`, `password`,
+`passwd`, `credential`, `api_key`, `private_key`, `authorization` — appears in
+the name `AccountKey`. So a whole connection string is returned intact:
 
     DefaultEndpointsProtocol=https;AccountName=x;AccountKey=Zm9v…;
 
@@ -247,63 +466,56 @@ recorded in R-015 — probing the denylist with credential formats it does not
 claim, on the principle that a denylist's real boundary is only visible from
 outside it.
 
-### R-015 — Two attempts to unify the sanitizer's two paths, both reverted
+**Resolution: five new value patterns, closed on both paths.** Every shape
+above is now an entry in `_SENSITIVE_VALUE_PATTERNS`
+(`src/nebius_mcp/sanitize.py:140`) — URL userinfo, the GitHub PAT family, Slack
+tokens, AWS access-key ids, and Azure `AccountKey=`. That list is the one thing
+`redact` and `redact_text` both run, via `_redact_value`
+(`src/nebius_mcp/sanitize.py:262`), so unlike R-012 these close *symmetrically*:
+each of the five was verified redacted on the success path and the error path.
 
-**Severity:** low as it stands — the tree is back at the pre-attempt behaviour
-plus one narrow fix. Recorded because the next person to look at this rule will
-have the same idea, and the two ways it failed are not obvious in advance.
+**Azure deviates from the advice this entry gave, deliberately.** The paragraph
+above says `AccountKey` is "a one-word addition to the keyword list, not a new
+value pattern". That was rejected on re-reading. The keyword list feeds the
+in-string assignment rule, and R-015 is the standing record that the rule runs
+on the error path only — so a keyword addition would have closed Azure for an
+exception message and left it open for an Azure connection string pasted into a
+resource description, which is a successful response. As a value pattern it
+closes both. The entry's reasoning about *mechanism* was right and its
+recommended *remedy* was wrong, which is the useful thing to notice: a correct
+diagnosis does not carry a correct prescription with it.
 
-`redact` (every successful API response, via `safe_proto`) and `redact_text`
-(exception text) do not sanitize equally. `_ASSIGNMENT_PATTERN`
-(`src/nebius_mcp/sanitize.py:229`) — the rule that catches `name=secret` inside
-a flat string — runs only in `redact_text`. The obvious repair is to move it
-into `_redact_value` so both paths share one implementation. That was attempted
-twice and reverted twice.
+The userinfo rule follows this entry's advice exactly — it anchors on the `://`
+and the `@`, never on the colon alone. `https://token-service.internal:8443/healthz`
+and `cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2` are returned unchanged by
+`redact`, which was checked rather than assumed, and a mutation that drops the
+`@` requirement fails named tests.
 
-**Attempt 1** moved the existing regex into `_redact_value` unchanged. Its name
-group is `[A-Za-z0-9_.-]*(?:secret|token|…)[A-Za-z0-9_.-]*` — an unbounded
-character class in front of a literal alternation, which backtracks
-quadratically. Harmless while it only saw exception strings; on the success
-path it saw every field of every resource, and the module docstring says
-outright that nothing caps response size. Measured: a 64 KB base64url field
-took 69.6 seconds. `redact` is synchronous and called from async tool handlers,
-so that is a full event-loop stall. It also mangled values the model has to act
-on — `https://token-service.internal:8443/healthz` lost its port, and
-`cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2` lost its tag — because the
-name group matches a keyword anywhere inside a hostname or image name.
+**What R-015's lesson bought, concretely.** The first draft of the userinfo
+rule wrote the scheme as `[A-Za-z][A-Za-z0-9+.-]*://` — the readable spelling,
+and the identical mistake R-015 attributes to attempt 1: an unbounded character
+class in front of a literal, backtracking quadratically, 1.7 s on 64 KB.
+Benchmarking caught it before review did; anchoring on the literal `://` fixed
+it. R-015 said a cost benchmark across string shapes had to be part of the
+change rather than a review afterthought. This is the round where that was
+done, and it paid on the first draft.
 
-**Attempt 2** rebuilt the rule as a hand-written linear scanner with the
-keyword matched as a whole name segment. It fixed the reported cases and was
-mutation-tested, and it was still wrong in two ways:
+Each of the five patterns is mutation-tested: deleting any one fails a test
+named for that credential and nothing else. The `\b` anchors on the GitHub
+pattern are pinned separately, because without them the prefix fires inside an
+ordinary base64 run.
 
-- The quadratic cost moved rather than disappeared. The value alternative
-  `[^\s,;&)}\]]+` excludes neither `:` nor `=`, and a rejected candidate
-  advanced the cursor by only the name length, so a whitespace-free token was
-  rescanned once per candidate. `redact` on 128 KB of `"a:"` repeated took
-  11.9 seconds — worse than what it replaced.
-- Matching the keyword as a whole segment silently *narrowed* detection.
-  `PGPASSWORD=`, `dbpassword=`, `authtoken=`, `apitoken=`, `rootpassword=` and
-  `vaulttoken=` were all caught before and leaked after. A change made for cost
-  and false positives quietly reduced what the sanitizer recognised, and no
-  test noticed.
-
-What shipped instead is the narrow fix: `X-Amz-Security-Token` added to the
-presigned-URL value pattern (`src/nebius_mcp/sanitize.py:85`), which closes the
-originally reported leak — an STS session token returned in the clear on the
-success path while being redacted on the error path — with no blast radius.
-
-The asymmetry itself remains open. For whoever tries a third time: the two
-failures were both cost, and both were found by benchmarking rather than by
-tests. Any future attempt needs a cost benchmark across string *shapes* (long
-base64url runs, separator-dense strings with no terminators, hex) and an
-explicit before/after diff of which credential names are still recognised.
-Neither is expensive; neither was done.
-
-**Found by:** benchmarking the landed change rather than reading it — both
-attempts passed their own suites, ruff, and mypy strict, and attempt 2's suite
-included a linearity test that its own blowup shape evaded.
-
-## Fixed
+**What this does not close.** It is still a denylist, and this entry is explicit
+that a denylist documented by example is what it is. Not covered: GitHub's
+newer `github_pat_` fine-grained form, GitLab `glpat-`, Stripe, Google `AIza`,
+npm, and every issuer not on the list. Azure is closed for `AccountKey=` only —
+`SharedAccessSignature` and `sig=` are not matched. The userinfo rule needs a
+scheme-relative `://`, so protocol-relative `//user:pass@host` and
+`git@host:path` are both outside it. And `authorization=Bearer <opaque-token>`
+still surrenders only the word `Bearer`: the assignment rule's value stops at
+the first space by design. That last one was true before this change too — an
+early draft of the test corpus asserted otherwise and was wrong about the
+module, not about the fix.
 
 ### R-017 — `NEBIUS_IAM_TOKEN` alone never worked
 
@@ -521,7 +733,7 @@ deliberate, and both are documented in the code:
   `k8s.py` (2), `registry.py` (2), `secrets.py` (2) and `vpc.py` (4);
   `src/nebius_mcp/tools/vpc.py:75` is the shape. It has to stay outside
   `redact`, because the cursor's own field name matches the `token` substring
-  rule, and `redact`'s docstring (`src/nebius_mcp/sanitize.py:187`) says so.
+  rule, and `redact`'s docstring (`src/nebius_mcp/sanitize.py:309`) says so.
 
 The operation summary is a third value in the same position and the only one
 of the three that nobody chose.
@@ -608,7 +820,7 @@ Two things that should have contained it did not:
   IP — nothing about who was being given shell.
 
 **Fix:** `_validate_ssh_public_key` (`src/nebius_mcp/tools/compute.py:110`) is
-called at `src/nebius_mcp/tools/compute.py:632`, before the parent is resolved,
+called at `src/nebius_mcp/tools/compute.py:724`, before the parent is resolved,
 before a token is minted and before any SDK object exists. It refuses on two
 grounds: any character outside printable ASCII 0x20–0x7E, and failure to parse
 as exactly one OpenSSH public key line. Printable-ASCII rather than "no `\n`"
@@ -617,9 +829,15 @@ break — Python's own `str.splitlines` honours nine others — and enumerating
 what the guest's YAML parser honours would be a guess. Neither refusal quotes
 the value back: the likeliest wrong paste here is a private key.
 
+That last argument no longer carries the refusal, though the refusal itself is
+unchanged. R-020 replaced the interpolation with a serializer, which quotes a
+newline rather than being escaped by it, so the printable-ASCII rule now rests
+on `authorized_keys` being line-based in the guest instead of on what the YAML
+parser honours. The docstring was rewritten to say so.
+
 The validated key is now in the token's `args`
-(`src/nebius_mcp/tools/compute.py:662`) and summarized into the preview by
-`_ssh_key_summary` (`src/nebius_mcp/tools/compute.py:165`) as an
+(`src/nebius_mcp/tools/compute.py:746`) and summarized into the preview by
+`_ssh_key_summary` (`src/nebius_mcp/tools/compute.py:245`) as an
 `ssh-keygen`-compatible `SHA256:` fingerprint plus a length-capped key type and
 comment. Fingerprint, not key, so the transcript stays readable; capped,
 because both echoed fields are caller-controlled.
@@ -636,6 +854,60 @@ reported "the key's fingerprint". Reading that claim against the code asked the
 next question — what else can that argument hold? — and the injection was in
 the answer. The defect itself long predated the claim; what surfaced it was
 checking a new sentence against old code.
+
+### R-008 — Generic list returned nothing for three resource types
+
+**Severity:** high. Silently wrong results.
+
+`nebius_resource_list` read the response's `items` field. Three services name
+that collection after the resource instead:
+
+| Resource | Field |
+|---|---|
+| `msp.postgresql_cluster` | `clusters` |
+| `msp.postgresql_backup` | `backups` |
+| `common.operation` | `operations` |
+
+Listing any of those returned `{"items": []}` — indistinguishable from an
+account that genuinely has none. A wrong answer that looks like a correct one
+is worse than an error, because nothing prompts anyone to check.
+
+**Fix:** `catalog.list_items_field` resolves the collection field from the
+response message, preferring `items` and otherwise taking the sole non-token
+field. A test asserts every list-capable resource resolves one, so a new
+service with a different name fails the suite instead of silently returning
+nothing.
+
+**Found by:** the roadmap council's critique pass, which resolved all list
+response messages and compared their fields against what the code assumed.
+None of the existing tests could catch it — they mock the response object, so
+`items` exists because the mock was told to have it.
+
+### R-009 — Truncated PEM blocks leaked their key material
+
+**Severity:** high.
+
+The PEM redaction pattern made the END marker an optional trailing group, so
+a block without one matched only its header and everything after it survived:
+
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA..."
+    -> "<redacted>\nMIIEowIBAAKCAQEA..."
+
+The code comment claimed the opposite — that the optional marker was there so
+truncated blocks would still match. Truncation is not hypothetical: capped
+error strings and log tails are exactly where half a PEM appears, and the
+error path was routed through the sanitizer in the same release.
+
+**Fix:** consume to the END marker or to end-of-string.
+
+**Found by:** the fan-out's adversarial verification pass, using mutation
+testing — it also showed that removing `client_certificate_data`,
+`ssh_authorized_keys`, the hyphen separator, or the `X-Amz-Credential`
+alternative each left the whole suite green. Tests now assert each
+individually.
+
+**The lesson:** a passing suite says nothing about which rules it actually
+constrains. Mutating the code and re-running is what tells you.
 
 ### R-006 — `check_environment` reported credentials that cannot authenticate
 
@@ -781,9 +1053,28 @@ Recorded so future reviews start here rather than rediscovering them.
 7. **Compare what a diagnostic tool reports against what actually happens.**
    Found R-006.
 8. **Verify a fix adversarially, and treat its new prose as the entry point.**
-   Found R-014, R-012 and R-013. A fix arrives with a claim attached — a fresh
-   docstring sentence, a new preview field, a narrowed regex. Reading that
+   Found R-014, R-012, R-013 and R-020. A fix arrives with a claim attached — a
+   fresh docstring sentence, a new preview field, a narrowed regex. Reading that
    claim against the code it describes asks the question the fix's own tests do
    not: what *else* can reach this line? R-014's injection had been there since
    the tool was written; what surfaced it was a new sentence promising the
-   preview showed "the key's fingerprint", singular.
+   preview showed "the key's fingerprint", singular. R-020 came from asking the
+   same question of R-014's own fix — not what an *unvalidated* value can do,
+   but what a *validated* one still can.
+9. **Benchmark the change across input shapes, not just the reported case.**
+   Found the cost half of R-012, and caught a fresh quadratic pattern in that
+   same fix before review saw it. R-015 records two reverted attempts whose
+   damage was invisible to their own green suites; both were cost, and both
+   would have been caught by one benchmark table over long base64url runs,
+   separator-dense strings with no terminators, and hex. A linearity test that
+   only exercises the shape you thought of is not this technique — attempt 2
+   shipped one and its own blowup shape evaded it.
+10. **Diff what a rule recognised before and after, by importing both.** Found
+    that attempt 2 in R-015 had silently narrowed credential detection while
+    claiming to fix cost and false positives. A refactor of a denylist is a
+    behaviour change until proven otherwise, and "proven" means running the old
+    module and the new one over the same corpus, not reading the regex.
+11. **Round-trip a generated document through the parser that consumes it.**
+    Found R-020. `compute.py` emits YAML for cloud-init to read; nothing had
+    ever parsed the emitted document back. Reading the template says it looks
+    right, and `yaml.safe_load` says whether it is.

@@ -135,12 +135,25 @@ def preview_or_execute(
 
         ``None`` if the token is valid and the caller should proceed with
         the real execution.
+
+    Both paths return normally, so from the outside the two halves of the
+    two-step are indistinguishable — which is how the audit log came to record
+    a previewed delete and a real one identically (R-011). This function is the
+    only code that knows which path it took, so the preview branch says so, via
+    :func:`audit.mark_previewed`.
     """
     require_write(tool)
     if confirm_token and consume(tool, args, confirm_token):
         return None  # caller proceeds
 
+    # The flag lives in audit because audit owns the record vocabulary and is
+    # the only reader. Imported here rather than at module scope so that this
+    # module — which every destructive tool imports, and which the write gate
+    # sits in — does not pull structlog in behind it just to report an outcome.
+    from .audit import mark_previewed
+
     ticket = issue(tool, args, ttl=ttl)
+    mark_previewed()
     return {
         "_preamble": (
             "DRY RUN. This destructive operation has NOT executed. To confirm, "

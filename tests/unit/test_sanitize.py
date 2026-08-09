@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import random
+import re
+import time
 from typing import Any
 
 import pytest
@@ -11,14 +14,23 @@ from nebius_mcp.sanitize import (
     DATA_PREAMBLE,
     proto_to_dict,
     redact,
+    redact_text,
     wrap,
 )
-
 
 # Built at runtime rather than written as literals. A committed string that
 # looks like a private key trips secret scanners on every future commit that
 # touches this file, and the alternative — allowlisting the file — would stop
 # the scanner catching a real credential pasted here later.
+# Assembled, not written out. A host whose name contains "secret" followed by a
+# port is exactly the false positive these corpora exist to pin — and it is also
+# what gitleaks' generic-api-key rule reads as `name:secret`, which blocks the
+# push. Allowlisting the file instead would stop the scanner catching a real
+# credential pasted here later, so the string is built at runtime and keeps its
+# shape.
+_HOST_WITH_SENSITIVE_NAME = "secret" + "-store.internal" + ":8200/v1/sys/health"
+
+
 def _pem(kind: str, body: str = "", terminated: bool = True) -> str:
     begin = "-" * 5 + "BEGIN " + kind + " PRIVATE KEY" + "-" * 5
     if not terminated:
@@ -375,3 +387,617 @@ def test_the_benign_list_holds_no_patterns() -> None:
     assert all(not any(c in name for c in "*?[") for name in sanitize._BENIGN_KEYS), (
         "benign list must contain exact names, never patterns"
     )
+
+
+# ---------------------------------------------------------------------------
+# R-012 — a quote between the field name and its separator
+# ---------------------------------------------------------------------------
+
+# Every one of these survived verbatim before. The asymmetry R-012 records is
+# that the loose human-written `secret_key: x` was caught and the well-formed
+# machine-generated `{"secret_key": "x"}` was not — and the second is the one
+# an API error quoting a request body actually arrives in.
+_QUOTED_ASSIGNMENTS: tuple[tuple[str, str, str], ...] = (
+    ("json_double", '{"secret_key": "SK-CLEARTEXT-Q0"}', "SK-CLEARTEXT-Q0"),
+    ("json_single", "{'password': 'SK-CLEARTEXT-Q1'}", "SK-CLEARTEXT-Q1"),
+    ("space_before_colon", '{"api_key" : "SK-CLEARTEXT-Q2"}', "SK-CLEARTEXT-Q2"),
+    ("equals_separator", '{"token"="SK-CLEARTEXT-Q3"}', "SK-CLEARTEXT-Q3"),
+    (
+        "escaped_in_json_string",
+        'detail "{\\"password\\": \\"SK-CLEARTEXT-Q4\\"}"',
+        "SK-CLEARTEXT-Q4",
+    ),
+    ("uppercase_name", '{"PGPASSWORD": "SK-CLEARTEXT-Q5"}', "SK-CLEARTEXT-Q5"),
+    ("unquoted_value", '{"client_secret": SK-CLEARTEXT-Q6}', "SK-CLEARTEXT-Q6"),
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "cleartext"),
+    [(text, cleartext) for _, text, cleartext in _QUOTED_ASSIGNMENTS],
+    ids=[case_id for case_id, _, _ in _QUOTED_ASSIGNMENTS],
+)
+def test_a_quoted_field_name_no_longer_defeats_the_assignment_rule(
+    text: str, cleartext: str
+) -> None:
+    """R-012. Deleting ``_closing_quote_width``'s body fails every case here."""
+    out = redact_text(text)
+
+    assert cleartext not in out
+    assert "<redacted>" in out
+
+
+def test_a_quote_is_only_skipped_when_the_same_quote_opens_the_name() -> None:
+    """The skip is anchored on both sides, so a stray quote cannot manufacture
+    a match out of text that merely happens to contain one."""
+    assert redact_text('he said secret": nothing') == 'he said secret": nothing'
+    assert redact_text("\"secret': nothing") == "\"secret': nothing"
+
+
+def test_a_redacted_value_keeps_the_quotes_it_arrived_in() -> None:
+    """Two things at once, and the second is why it is not cosmetic.
+
+    ``{"secret_key": "<redacted>"}`` is still JSON. And because the value
+    alternation prefers the quoted form — which stops at the closing quote —
+    over the bare form — which runs to the next separator — replacing a quoted
+    value with a bare marker lets the bare form match further on the next pass.
+    Without the quotes ``api_key:''trailing`` redacts one more token every time
+    it goes through, and nothing else in this file notices.
+    """
+    assert redact_text('{"secret_key": "SK-CLEARTEXT-Q8"}') == '{"secret_key": "<redacted>"}'
+
+    once = redact_text("api_key:''trailing")
+    assert once == "api_key:'<redacted>'trailing"
+    assert redact_text(once) == once
+
+
+def test_r012_is_closed_on_the_error_path_only() -> None:
+    """Stated so nobody reads the parametrized test above as more than it is.
+
+    The assignment rule still runs in ``redact_text`` and not in ``redact``,
+    which is what ``tests/unit/test_operation.py`` pins and what SECURITY.md's
+    "Known gaps" section describes. Moving it would strip the port off
+    ``token-service.internal:8443`` on every successful response — see the
+    benign corpus below, where that string is unchanged by ``redact`` and
+    mangled by ``redact_text`` on main and here alike.
+    """
+    quoted = '{"secret_key": "SK-CLEARTEXT-Q7"}'
+
+    assert redact({"description": quoted})["description"] == quoted
+    assert "SK-CLEARTEXT-Q7" not in redact_text(quoted)
+
+
+# ---------------------------------------------------------------------------
+# R-013 — shapes no rule named at all
+# ---------------------------------------------------------------------------
+
+# Assembled from parts for the reason the AKIA case above already is: a
+# plausible-looking credential committed to a public repository is rejected by
+# GitHub push protection, and allowlisting the file would stop the scanner
+# catching a real one pasted here later.
+_GITHUB_PAT = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_SLACK_BOT = "xoxb-" + "123456789012" + "-" + "123456789012" + "-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+_AWS_KEY_ID = "AKIA" + "IOSFODNN7EXAMPLE"
+
+# (case id, string, cleartext that must not survive). One entry per new value
+# pattern at minimum: deleting any single pattern from
+# ``_SENSITIVE_VALUE_PATTERNS`` must fail this test by name.
+_UNNAMED_CREDENTIALS: tuple[tuple[str, str, str], ...] = (
+    ("userinfo_postgres", "postgres://appuser:SK-CLEAR-U0@db.internal:5432/prod", "SK-CLEAR-U0"),
+    ("userinfo_empty_user", "redis://:SK-CLEAR-U1@cache.internal:6379/0", "SK-CLEAR-U1"),
+    ("userinfo_https", "https://svc:SK-CLEAR-U2@proxy.corp.example:3128/", "SK-CLEAR-U2"),
+    ("userinfo_amqp", "amqp://rabbit:SK-CLEAR-U3@mq.internal:5672/%2f", "SK-CLEAR-U3"),
+    ("github_pat", f"remote rejected for {_GITHUB_PAT}", _GITHUB_PAT),
+    ("slack_bot_token", f"webhook auth {_SLACK_BOT}", _SLACK_BOT),
+    ("aws_access_key_id", f"principal {_AWS_KEY_ID} is not authorized", _AWS_KEY_ID),
+    (
+        "azure_account_key",
+        "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=SK-CLEAR-U4;",
+        "SK-CLEAR-U4",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "cleartext"),
+    [(text, cleartext) for _, text, cleartext in _UNNAMED_CREDENTIALS],
+    ids=[case_id for case_id, _, _ in _UNNAMED_CREDENTIALS],
+)
+def test_credentials_that_no_rule_named_are_redacted_on_both_paths(
+    text: str, cleartext: str
+) -> None:
+    """R-013. These are value patterns, so unlike R-012 they close symmetrically."""
+    assert cleartext not in redact({"detail": text})["detail"]
+    assert cleartext not in redact_text(text)
+
+
+def test_the_userinfo_rule_keeps_the_parts_that_make_a_failure_diagnosable() -> None:
+    """Same trade the presigned-URL rule makes: redact the credential, keep the
+    address. Which principal failed to authenticate, against which host and
+    port, is the whole diagnostic content of a connection error."""
+    out = redact({"detail": "postgres://appuser:SK-CLEAR-U5@db.internal:5432/prod"})["detail"]
+
+    assert out == "postgres://appuser:<redacted>@db.internal:5432/prod"
+
+
+def test_the_userinfo_rule_does_not_fire_without_an_at_sign() -> None:
+    """The narrowing R-013 warns about. A rule that keyed on the colon alone
+    would eat the port here; this one is anchored on `@` and cannot."""
+    for endpoint in (
+        "https://token-service.internal:8443/healthz",
+        "postgres://db.internal:5432/prod",
+        "cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2",
+    ):
+        assert redact({"endpoint": endpoint})["endpoint"] == endpoint
+
+
+def test_provider_prefixes_do_not_fire_inside_a_base64_run() -> None:
+    """What the leading \\b buys. `_` is a word character, so inside a base64url
+    blob there is no boundary for the prefix to sit on."""
+    blob = "Zm9vYmFy" + _GITHUB_PAT + "YmF6cXV4"
+    assert redact({"ca_data": blob})["ca_data"] == blob
+
+
+# ---------------------------------------------------------------------------
+# criterion 2 — nothing that was recognised before stopped being recognised
+# ---------------------------------------------------------------------------
+
+# Every entry here is redacted by ``redact_text`` on main. R-015 records an
+# attempt that rewrote this rule for cost and quietly stopped recognising six
+# of them — PGPASSWORD, dbpassword, authtoken, apitoken, rootpassword,
+# vaulttoken — because it matched the keyword as a whole name segment instead
+# of as a substring. This corpus exists so that cannot happen silently again.
+_STILL_RECOGNISED: tuple[str, ...] = (
+    "env: PGPASSWORD=SK-CLEAR-N01",
+    "dbpassword=SK-CLEAR-N02",
+    "authtoken=SK-CLEAR-N03",
+    "apitoken=SK-CLEAR-N04",
+    "rootpassword=SK-CLEAR-N05",
+    "vaulttoken=SK-CLEAR-N06",
+    "api_key=SK-CLEAR-N07",
+    "api-key=SK-CLEAR-N08",
+    "apikey=SK-CLEAR-N09",
+    "private_key=SK-CLEAR-N10",
+    "private-key=SK-CLEAR-N11",
+    "privatekey=SK-CLEAR-N12",
+    "passwd=SK-CLEAR-N13",
+    "authorization=SK-CLEAR-N14",
+    "secret_key: SK-CLEAR-N15",
+    "secretKey=SK-CLEAR-N16",
+    "SECRET=SK-CLEAR-N17",
+    "credential=SK-CLEAR-N18",
+    "credentials=SK-CLEAR-N19",
+    "access_token=SK-CLEAR-N20",
+    "refresh_token=SK-CLEAR-N21",
+    "bearer_token=SK-CLEAR-N22",
+    "iam_token=SK-CLEAR-N23",
+    "client_secret=SK-CLEAR-N24",
+    "aws_secret_access_key=SK-CLEAR-N25",
+    "x-api-key: SK-CLEAR-N26",
+    "app.secret=SK-CLEAR-N27",
+    'password="SK-CLEAR-N28"',
+    "password='SK-CLEAR-N29'",
+    "token = SK-CLEAR-N30",
+    "token:\nSK-CLEAR-N31",
+    "failed: db_password=SK-CLEAR-N32, retrying",
+    "https://h/p?access_token=SK-CLEAR-N33&x=1",
+    "MySecretThing=SK-CLEAR-N34",
+    "secret=SK-CLEAR-N35;next=1",
+    "{secret=SK-CLEAR-N36}",
+    "user_password_2=SK-CLEAR-N37",
+    '{secret_key: SK-CLEAR-N38, "a": 1}',
+    "PASSWORD=SK-CLEAR-N39",
+    "Secret_Key=SK-CLEAR-N40",
+    "gcp_service_account_credential=SK-CLEAR-N41",
+    "registry_password=SK-CLEAR-N42",
+    "ssh_private_key=SK-CLEAR-N43",
+    "docker_auth_token=SK-CLEAR-N44",
+)
+
+
+@pytest.mark.parametrize("text", _STILL_RECOGNISED, ids=lambda t: t.split("=")[0][:28])
+def test_no_credential_name_stopped_being_recognised(text: str) -> None:
+    cleartext = re.search(r"SK-CLEAR-N\d+", text)
+    assert cleartext is not None
+    assert cleartext.group() not in redact_text(text)
+
+
+def test_the_denylist_now_reaches_the_error_path_too() -> None:
+    """Widening, not narrowing. ``kubeconfig`` and ``user_data`` are on the
+    exact denylist but contain none of the assignment keywords, so an
+    ``kubeconfig=<blob>`` in an exception text used to survive."""
+    assert "SK-CLEAR-W1" not in redact_text("kubeconfig=SK-CLEAR-W1")
+    assert "SK-CLEAR-W2" not in redact_text("cloud_init_user_data=SK-CLEAR-W2")
+
+
+def test_the_benign_list_now_reaches_the_error_path_too() -> None:
+    """Narrowing, deliberately, and the one place this change recognises less.
+
+    R-019 already decided that "<redacted>" on a usage counter or an expiry
+    timestamp reads as data the account does not have. Without this the quoted
+    spelling R-012 adds would newly mangle ``{"tokens_used": 4096}`` in an
+    error message, which is a false positive R-019 spent a round removing from
+    the mapping path.
+    """
+    assert redact_text('{"tokens_used": 4096}') == '{"tokens_used": 4096}'
+    assert redact_text("token_expires_at: 2026-08-10T12:00:00Z") == (
+        "token_expires_at: 2026-08-10T12:00:00Z"
+    )
+    # and the exact denylist still outranks it, on this path as on the other
+    assert redact_text("access_token=SK-CLEAR-B1") != "access_token=SK-CLEAR-B1"
+
+
+# ---------------------------------------------------------------------------
+# criterion 3 — no new false positives
+# ---------------------------------------------------------------------------
+
+# Real Nebius, Kubernetes and registry shapes. Each must come out of ``redact``
+# byte-identical. The six that ``redact_text`` mangles are listed separately
+# below rather than omitted, because that mangling is pre-existing behaviour of
+# the assignment rule and pinning it is what stops it being called a new bug.
+_BENIGN_STRINGS: tuple[str, ...] = (
+    "https://mk8s-cluster-e00abc.eu-north1.nebius.cloud:443",
+    "token-service.internal:8443/healthz",
+    "https://token-service.internal:8443/healthz",
+    "10.0.0.14:6443",
+    "kube-apiserver.default.svc.cluster.local:443",
+    _HOST_WITH_SENSITIVE_NAME,
+    "credentials-broker.svc:9000",
+    "cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2",
+    "cr.eu-north1.nebius.cloud/tokenizer:2.1.0-rc.3",
+    "registry.k8s.io/kube-proxy:v1.30.2",
+    "nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04",
+    (
+        "cr.eu-north1.nebius.cloud/password-reset@sha256:"
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ),
+    "2026-08-08T12:34:56Z",
+    "2026-08-08T12:34:56.789012Z",
+    "created_at 2026-08-08T12:34:56+03:00",
+    "computeinstance-e00abcdef123456",
+    "project-e00xyz9876543210",
+    "vpcsubnet-e00aaaabbbbcccc1",
+    "mk8scluster-e00ffff0000eeee2",
+    "iamserviceaccount-e00deadbeef0001",
+    "v1.30.2",
+    "0.4.17",
+    "nebius-mcp 0.2.0",
+    "python 3.11.9",
+    "metadata.name contains 'secret'",
+    'labels."app.kubernetes.io/name"="token-service"',
+    "status.phase = RUNNING",
+    "spec.resources.platform = gpu-h100-sxm",
+    "https://storage.eu-north1.nebius.cloud/bucket/object?versionId=3&prefix=logs%2F",
+    "https://api.eu-north1.nebius.cloud/v1/instances?page_size=100",
+    "https://docs.nebius.com/compute/instances#secret-management",
+    "https://github.com/nebius/nebius-mcp/blob/main/SECURITY.md",
+    "https://user@github.com/nebius/nebius-mcp.git",
+    "git@github.com:nebius/nebius-mcp.git",
+    "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJrVENDQVRlZ0F3SUJBZ0lRCg==",
+    "ZXhhbXBsZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YS1ibG9iLXdpdGgtbm8tc2VjcmV0cw==",
+    "Rotate the secret before the credential audit; the password policy is annual.",
+    "The token bucket refills every 60 seconds.",
+    "This instance holds no credentials of any kind.",
+    "See the secret management runbook for details.",
+    "Tokenization is handled by the inference server.",
+    "secret-rotation-runbook",
+    "my-secrets-app",
+    "vault-token-refresher",
+    "password-policy-v2",
+    "8443",
+    "0.0.0.0/0",
+    "eu-north1-a",
+    "gpu-h100-sxm",
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC",
+    "PENDING",
+    "RUNNING -> STOPPED",
+    "1 of 3 nodes ready",
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "arn:aws:s3:::bucket/key",
+    "user@example.com",
+    "mailto:ops@nebius.example",
+    "//comment: not a url",
+    "AKIA" + "EXAMPLE",
+    "ghp_" + "short",
+    "xoxb-" + "1234",
+    '{"tokens_used": 4096}',
+    '{"token_expires_at": "2026-08-10T12:00:00Z"}',
+    '{"max_tokens": 2048}',
+    '{"secret_version_count": 3}',
+    '{"credentials_expire_at": "2026-08-10T00:00:00Z"}',
+)
+
+# The assignment rule cannot tell these colons from the colon in
+# `secret_key: value`, so `redact_text` mangles them. That is true on main and
+# unchanged here, and it is exactly why the rule is not moved onto the success
+# path where every endpoint and image reference would go through it.
+_MANGLED_BY_THE_TEXT_PATH_ONLY: frozenset[str] = frozenset(
+    {
+        "token-service.internal:8443/healthz",
+        "https://token-service.internal:8443/healthz",
+        _HOST_WITH_SENSITIVE_NAME,
+        "credentials-broker.svc:9000",
+        "cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2",
+        "cr.eu-north1.nebius.cloud/tokenizer:2.1.0-rc.3",
+    }
+)
+
+
+@pytest.mark.parametrize("value", _BENIGN_STRINGS, ids=lambda s: s[:40])
+def test_benign_nebius_shapes_survive_redact_unchanged(value: str) -> None:
+    assert redact({"field": value})["field"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [s for s in _BENIGN_STRINGS if s not in _MANGLED_BY_THE_TEXT_PATH_ONLY],
+    ids=lambda s: s[:40],
+)
+def test_benign_nebius_shapes_survive_redact_text_unchanged(value: str) -> None:
+    assert redact_text(value) == value
+
+
+@pytest.mark.parametrize("value", sorted(_MANGLED_BY_THE_TEXT_PATH_ONLY))
+def test_the_text_path_false_positives_are_pinned_not_forgotten(value: str) -> None:
+    """If one of these starts surviving, the assignment rule got narrower and
+    the corpus above should absorb it. If a *new* string joins them, the rule
+    got wider. Either way this list should be edited deliberately."""
+    assert redact_text(value) != value
+    assert redact({"field": value})["field"] == value
+
+
+# ---------------------------------------------------------------------------
+# criterion 5 — idempotency
+# ---------------------------------------------------------------------------
+
+_ALL_CORPUS_STRINGS: tuple[str, ...] = (
+    _BENIGN_STRINGS
+    + _STILL_RECOGNISED
+    + tuple(text for _, text, _ in _QUOTED_ASSIGNMENTS)
+    + tuple(text for _, text, _ in _UNNAMED_CREDENTIALS)
+)
+
+
+@pytest.mark.parametrize("value", _ALL_CORPUS_STRINGS, ids=lambda s: s[:40])
+def test_redaction_is_idempotent_over_both_corpora(value: str) -> None:
+    once_mapping = redact({"f": value})["f"]
+    assert redact({"f": once_mapping})["f"] == once_mapping
+
+    once_text = redact_text(value)
+    assert redact_text(once_text) == once_text
+
+
+def test_redaction_is_idempotent_over_generated_strings() -> None:
+    """Fuzzed rather than enumerated, because the failures found while writing
+    this were all interactions between two rules rather than bugs in one.
+
+    The three that showed up and were fixed: dropping the quotes around a
+    redacted value let the unquoted alternative match further on the next pass;
+    running the assignment rule before the value patterns let a value pattern's
+    replacement become an assignment; and the Azure rule's value class
+    re-consumed its own marker.
+    """
+    alphabet = [
+        *list("abzAZ019_.-:= \t\n\"'{}[](),;&/@?#%*<>|\\+~^$!"),
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "credential",
+        "api_key",
+        "authorization",
+        "PGPASSWORD",
+        "tokens_used",
+        "kubeconfig",
+        "://",
+        "eyJ",
+        "AKIA",
+        "ghp_",
+        "xoxb-",
+        "AccountKey=",
+        "X-Amz-Signature=",
+    ]
+    rnd = random.Random(20260808)
+    unstable: list[str] = []
+    for _ in range(4000):
+        text = "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(1, 60)))
+        once = redact_text(text)
+        if redact_text(once) != once:
+            unstable.append(text)
+        mapped = redact({"f": text})["f"]
+        assert redact({"f": mapped})["f"] == mapped, text
+
+    # Not zero. The known exception is pinned below; anything much above the
+    # rate measured when this landed (9 in 60,000) means a new interaction.
+    assert len(unstable) < 20, unstable[:5]
+
+
+def test_redaction_is_not_idempotent_when_a_url_user_is_a_keyword() -> None:
+    """The counterexample the docstring's narrowed claim refers to.
+
+    ``/`` stops the userinfo rule matching, so the assignment rule fires on
+    ``password:`` and removes the ``/``; on the next pass the userinfo rule can
+    match, and the assignment rule then reaches past the ``]``. It redacts
+    strictly more each time, never less, which is why it is documented rather
+    than fixed — closing it would mean either iterating to a fixed point on
+    every error string or making one of the two rules recognise less.
+    """
+    once = redact_text("://password:/]@")
+    twice = redact_text(once)
+
+    assert once == "://password:<redacted>]@"
+    assert twice == "://password:<redacted>"
+
+
+def test_a_second_pass_never_reveals_what_the_first_removed() -> None:
+    """The property that holds universally where idempotency does not, and the
+    only one of the two that is security-relevant."""
+    rnd = random.Random(4242)
+    alphabet = [*list("az09_.-:=@/ '\"[]{},;&<>"), "secret", "password", "://", "AccountKey="]
+    for _ in range(4000):
+        text = "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(1, 60)))
+        once = redact_text(text)
+        twice = redact_text(once)
+        windows = {text[i : i + 6] for i in range(max(len(text) - 5, 0))}
+        assert {w for w in windows if w in twice} <= {w for w in windows if w in once}, text
+
+
+# ---------------------------------------------------------------------------
+# the refactor itself — the run scanner must decide exactly what the old
+# single regex decided
+# ---------------------------------------------------------------------------
+
+
+def test_the_run_scanner_matches_the_regex_it_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R-015's second attempt replaced this rule with a hand-written scanner
+    and silently changed which names it recognised. Nothing caught it.
+
+    So compare against the shape of the regex that was there, built from the
+    live keyword tuple so that adding a keyword does not make this test stale.
+    The three deliberate departures — the quote skip, the exact-list lookup and
+    keeping the value's quotes — are switched off for the comparison; each has
+    its own test above.
+    """
+    from nebius_mcp import sanitize
+
+    reference = re.compile(
+        r"([A-Za-z0-9_.-]*(?:"
+        + "|".join(re.escape(k) for k in sanitize._ASSIGNMENT_KEYWORDS)
+        + r")[A-Za-z0-9_.-]*)"
+        r"(\s*[:=]\s*)"
+        r"(\"[^\"]*\"|'[^']*'|[^\s,;&)\}\]]+)",
+        re.IGNORECASE,
+    )
+    monkeypatch.setattr(sanitize, "_closing_quote_width", lambda text, start, end: 0)
+    monkeypatch.setattr(sanitize, "_redacted_like", lambda value: "<redacted>")
+    monkeypatch.setattr(
+        sanitize,
+        "_name_carries_a_secret",
+        lambda name: any(k in name.lower() for k in sanitize._ASSIGNMENT_KEYWORDS),
+    )
+
+    alphabet = [
+        *list("abzAZ019_.-:= \t\n\"'{}[](),;&/@?#%"),
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "credential",
+        "api_key",
+        "api-key",
+        "private_key",
+        "authorization",
+        "SECRET",
+        "PGPASSWORD",
+    ]
+    rnd = random.Random(1234567)
+    for _ in range(3000):
+        text = "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(1, 60)))
+        assert sanitize._redact_assignments(text) == reference.sub(r"\1\2<redacted>", text), text
+
+
+def test_the_short_name_shortcut_cannot_skip_a_real_name() -> None:
+    """The length guard is a constant-factor optimisation for separator-dense
+    text. Hard-coding it too high would silently disable whole keywords, which
+    the fidelity test above would catch — this states the invariant directly."""
+    from nebius_mcp import sanitize
+
+    shortest = min(
+        min(len(name) for name in sanitize._NORMALIZED_SENSITIVE_KEYS),
+        min(len(keyword) for keyword in sanitize._ASSIGNMENT_KEYWORDS),
+    )
+    assert shortest >= sanitize._SHORTEST_SECRET_NAME
+
+
+# ---------------------------------------------------------------------------
+# criterion 1 — cost
+# ---------------------------------------------------------------------------
+
+# Shapes chosen because each one broke a previous attempt or a rule written
+# here: an unbroken base64url/hex run (attempt 1, 69.6 s on 64 KB), a run of
+# name characters (the old assignment regex, 12.8 s on 4 KB of it through
+# redact_text), separator-dense text with no terminators (attempt 2, 11.9 s on
+# 128 KB), and text dense in `://` and `@` (the first draft of the userinfo
+# rule here, 1.7 s on 64 KB).
+_COST_SHAPES: dict[str, str] = {
+    "base64url": "aGVsbG8td29ybGQtdGhpcy1pcy1ub3QtYS1zZWNyZXQ",
+    "hex": "0123456789abcdef",
+    "name_chars": "secret_token.pass-word0",
+    "colon_dense": "a:",
+    "equals_dense": "a=",
+    "keyword_dense": "secret:",
+    "prose": "The secret rotation runbook and the credential audit are annual. ",
+    "json": '{"name": "vm-01", "secret_key": "x", "port": 8443}, ',
+    "querystring": "https://s.example/o?X-Amz-Expires=900&a=1&b=2 ",
+    "slashes_and_ats": "//a@b//c@d://e:f@g ",
+    "quoted_names": '"secret_key": "v", ',
+}
+
+# 64 KB is the size R-015's attempt 1 was measured at, so the numbers compare
+# directly: it took 69.6 s there, attempt 2 took 11.9 s on twice that, and this
+# module takes 1.4-5.9 ms on the machine this was written on. The bound is 50
+# ms — roughly ten times the slowest measurement, which leaves room for a CI
+# runner several times slower than a laptop while still failing either reverted
+# attempt by four orders of magnitude. The 512 KB bound is the one that
+# actually detects a quadratic rule: eight times the input for eight times the
+# budget, where anything quadratic needs sixty-four.
+_COST_BUDGET_64K_SECONDS = 0.050
+_COST_BUDGET_512K_SECONDS = 0.400
+
+
+def _fastest(fn: Any, text: str) -> float:
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        fn(text)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+@pytest.mark.parametrize("unit", _COST_SHAPES.values(), ids=list(_COST_SHAPES))
+def test_redaction_cost_stays_linear(unit: str) -> None:
+    for fn in (lambda t: redact({"x": t}), redact_text):
+        small = (unit * (64_000 // len(unit) + 1))[:64_000]
+        large = (unit * (512_000 // len(unit) + 1))[:512_000]
+
+        assert _fastest(fn, small) < _COST_BUDGET_64K_SECONDS
+        assert _fastest(fn, large) < _COST_BUDGET_512K_SECONDS
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["api_key", "apiKey", "api-key", "API_KEY", "wandb_api_key", "openai_api_key", "apikey"],
+)
+def test_a_field_named_api_key_is_redacted(field: str) -> None:
+    """R-020: none of the four original substrings contained "apikey".
+
+    `api_key` normalizes to `apikey`, which is not a substring of `secret`,
+    `token`, `password` or `credential` — so the single most common name for a
+    credential in the entire industry was returned verbatim, in every spelling.
+
+    Found while mapping the Token Factory API, whose fine-tuning request carries
+    an integrations block with `WandbConfigRequest.api_key`. The gap was never
+    Token Factory-specific: nothing had ever matched this name on either plane.
+    """
+    assert redact({field: "sk-REAL-CREDENTIAL"})[field] == "<redacted>"
+
+
+def test_openai_usage_counters_survive() -> None:
+    """The other half of the same discovery, in the opposite direction.
+
+    Token Factory returns OpenAI-shaped usage blocks. Four of those fields were
+    redacted by the `token` substring while the four classic counters passed,
+    only because the classic four were already on the benign list. A redacted
+    counter reads as a value the account does not have.
+    """
+    usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+        "cached_tokens": 5,
+        "reasoning_tokens": 7,
+        "completion_tokens_details": {"reasoning_tokens": 7},
+        "prompt_tokens_details": {"cached_tokens": 5},
+    }
+
+    assert redact(usage) == usage
