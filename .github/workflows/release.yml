@@ -71,11 +71,44 @@ jobs:
       - name: Smoke-test the built wheel
         # Install the artifact that will actually be published and confirm the
         # console script works, rather than trusting that the source tree did.
+        #
+        # `--check` reports a credential preflight and exits 1 when it finds no
+        # credentials. Assert both the code and the payload: an earlier `|| true`
+        # here accepted every outcome, including an import error, a crash, and
+        # an unexpected exit 0.
+        #
+        # Which path `--check` takes depends on the environment, so pin it: an
+        # empty HOME makes ~/.nebius/config.yaml certainly absent (auth.py
+        # expands the path from HOME), and clearing the two credential env vars
+        # covers the other sources. That holds whether or not the runner has a
+        # real config, so this does not quietly depend on a GitHub-hosted image.
         run: |
           uv venv /tmp/smoke
           uv pip install --python /tmp/smoke/bin/python dist/*.whl
           /tmp/smoke/bin/nebius-mcp --version
-          /tmp/smoke/bin/nebius-mcp --check || true  # exits 1 without credentials, which is correct
+
+          mkdir -p /tmp/smoke-home
+          status=0
+          env -u NEBIUS_IAM_TOKEN -u NEBIUS_PROFILE HOME=/tmp/smoke-home \
+            /tmp/smoke/bin/nebius-mcp --check > /tmp/smoke-check.json || status=$?
+          cat /tmp/smoke-check.json
+          /tmp/smoke/bin/python - "$status" <<'PY'
+          import json, sys
+
+          status = int(sys.argv[1])
+          try:
+              with open("/tmp/smoke-check.json") as fh:
+                  report = json.load(fh)
+          except (OSError, json.JSONDecodeError) as exc:
+              sys.exit(f"::error::--check exited {status} without a JSON report: {exc}")
+
+          if status != 1 or report["has_credentials"] is not False or not report["next_steps"]:
+              sys.exit(
+                  f"::error::--check must exit 1 via the missing-credential path; got "
+                  f"exit {status}, has_credentials={report.get('has_credentials')!r}"
+              )
+          print(f"--check exited {status} via the missing-credential path")
+          PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

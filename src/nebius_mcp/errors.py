@@ -7,7 +7,9 @@ exception.
 
 The wrapped message goes through the same sanitizer as a successful response:
 an SDK exception string can quote request metadata, and a failure inside a
-secrets tool can quote the payload it was reading.
+secrets tool can quote the payload it was reading. The original exception is
+then dropped rather than chained, because the chain is a second, unsanitized
+copy of the same text and FastMCP prints it — see ``safe``.
 
 FastMCP introspects tool signatures, so we cannot use a *args/**kwargs
 wrapper here. The ``safe`` helper is meant to be called inside each tool
@@ -57,10 +59,33 @@ async def safe(coro: Awaitable[T]) -> T:
     Usage inside a tool:
 
         resp = await safe(client.list(req))
+
+    The original is deliberately dropped rather than chained. FastMCP logs a
+    failing tool call with ``logger.exception``, and its traceback handler
+    renders the whole ``__cause__``/``__context__`` chain — so a chained
+    original prints its *unredacted* ``str()``, gRPC metadata and
+    ``authorization`` header included, to stderr. Under the stdio transport
+    stderr is the client's log file, which is a wider audience than the
+    operator, and ``to_tool_error`` sanitizing its own message buys nothing
+    while the thing it sanitized travels alongside it.
+
+    Hence the raise sits *outside* the ``except`` block. ``raise ... from None``
+    inside it would clear ``__cause__`` and set ``__suppress_context__``, but
+    ``__context__`` would still hold the original — and that flag is a hint each
+    consumer chooses to honour, not a guarantee. Raising with no exception being
+    handled leaves nothing attached for any consumer to walk.
+
+    What that costs: the frames *below* this one — where inside the SDK the call
+    actually failed — no longer print. The frames above still do, so the
+    traceback still names the tool and the call site, and the exception's class
+    name plus up to ``MAX_ERROR_DETAIL_CHARS`` of redacted detail survive in the
+    ToolError itself and (shorter, at ``audit.MAX_AUDIT_ERROR_CHARS``) in the
+    audit record.
     """
     try:
         return await coro
     except ToolError:
         raise
     except Exception as exc:
-        raise to_tool_error(exc) from exc
+        error = to_tool_error(exc)
+    raise error

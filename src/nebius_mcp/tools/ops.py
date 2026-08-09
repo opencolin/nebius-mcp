@@ -98,8 +98,7 @@ def _build_report() -> EnvironmentReport:
         next_steps.extend(
             [
                 "Set NEBIUS_IAM_TOKEN to a short-lived bearer token, or",
-                f"Create a profile in {snap.config_file_path} "
-                "(`nebius profile create` then `nebius iam login`).",
+                f"Create a profile in {snap.config_file_path} (run `nebius profile create`).",
             ]
         )
     elif snap.config_file_exists and snap.active_profile and not snap.parent_id:

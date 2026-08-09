@@ -33,7 +33,7 @@ from ..errors import safe
 from ..operation import DEFAULT_WAIT_TIMEOUT_SECONDS, maybe_wait
 from ..pagination import clamp_page_size
 from ..sanitize import safe_proto, wrap
-from ._ops_helpers import DESTRUCTIVE_ANNOTATIONS, STATE_ANNOTATIONS
+from ._ops_helpers import COMPOSITE_ACTION_ANNOTATIONS, DESTRUCTIVE_ANNOTATIONS
 
 READ_ANNOTATIONS = {
     "readOnlyHint": True,
@@ -45,8 +45,10 @@ READ_ANNOTATIONS = {
 _KEYS = tuple(spec.key for spec in catalog.RESOURCES)
 ResourceType = Literal[_KEYS]  # type: ignore[valid-type]
 
-# Lifecycle verbs the action tool will dispatch.
-_ACTIONS = ("start", "stop", "restart", "resume", "activate", "deactivate", "undelete", "cancel")
+# Lifecycle verbs the action tool will dispatch. Shared with the catalog, which
+# needs to know which verbs are addressed by a bare ``id`` to work out whether a
+# request can be built at all.
+_ACTIONS = catalog.ACTION_VERBS
 ActionName = Literal[_ACTIONS]  # type: ignore[valid-type]
 
 # Actions that destroy work rather than just flipping state. Cancelling an AI
@@ -55,11 +57,75 @@ ActionName = Literal[_ACTIONS]  # type: ignore[valid-type]
 _IRREVERSIBLE_ACTIONS = frozenset({"cancel"})
 
 
-def _request_fields(request_cls: type) -> frozenset[str]:
-    try:
-        return frozenset(request_cls._public_fields_by_python_name())  # type: ignore[attr-defined]
-    except Exception:  # pragma: no cover - generated classes all expose this
-        return frozenset()
+# Resources these hand-written modules cover more richly than the generic layer.
+# Consulted only when a verb exists in the SDK but its request cannot be built
+# from the generic shape, so the caller is pointed somewhere that works instead
+# of at a dead end — and, just as usefully, is told plainly when nothing else
+# covers the resource. Guarded by test_dedicated_tool_hints_name_real_tools.
+_DEDICATED_TOOLS: dict[str, tuple[str, ...]] = {
+    "ai.endpoint": ("ai_list_endpoints", "ai_get_endpoint", "ai_get_endpoint_by_name"),
+    "compute.instance": (
+        "compute_list_instances",
+        "compute_get_instance",
+        "compute_create_instance",
+        "compute_start_instance",
+        "compute_stop_instance",
+        "compute_delete_instance",
+    ),
+    "compute.disk": ("compute_list_disks", "compute_get_disk", "compute_delete_disk"),
+    "compute.platform": ("compute_list_platforms",),
+    "mk8s.cluster": ("k8s_list_clusters", "k8s_get_cluster", "k8s_list_control_plane_versions"),
+    "mk8s.node_group": ("k8s_list_node_groups", "k8s_get_node_group"),
+    "vpc.network": ("vpc_list_networks", "vpc_get_network"),
+    "vpc.subnet": ("vpc_list_subnets", "vpc_get_subnet"),
+    "vpc.security_group": ("vpc_list_security_groups", "vpc_get_security_group"),
+    "vpc.allocation": ("vpc_list_allocations", "vpc_get_allocation"),
+    "iam.project": ("iam_list_projects", "iam_get_project"),
+    "registry.registry": ("registry_list", "registry_get"),
+    "registry.artifact": ("registry_list_images", "registry_get_image"),
+    "mysterybox.secret": ("secrets_list", "secrets_get"),
+    "mysterybox.secret_version": ("secrets_list_versions", "secrets_reveal_payload"),
+}
+
+
+def _dedicated_tool_hint(resource_type: str) -> str:
+    tools = _DEDICATED_TOOLS.get(resource_type)
+    if tools:
+        return f"Try a dedicated tool for this resource: {', '.join(tools)}."
+    return (
+        f"No dedicated tool covers {resource_type}, so this operation needs richer "
+        "parameters than any tool on this server accepts."
+    )
+
+
+# Verbs these tools actually dispatch. catalog.verbs() is deliberately wider —
+# it also reports verbs like create/update that only a dedicated tool covers —
+# so an error message from *this* module intersects with it before advising.
+_GENERIC_VERBS = frozenset({"list", "get", "get_by_name", "delete", *_ACTIONS})
+
+
+def _available(resource_type: str) -> str:
+    return ", ".join(sorted(catalog.verbs(resource_type) & _GENERIC_VERBS)) or "none"
+
+
+def _unreachable_message(spec: catalog.ResourceSpec, resource_type: str, verb: str) -> str:
+    """Explain a verb that exists in the SDK but not in a shape we can build.
+
+    Saying "does not support 'delete'" here would be false — the RPC is there.
+    What is missing is a way to express the request through tools that address a
+    resource by one string ID, so the message says exactly that, quotes the
+    SDK's own construction error, and names the request's real fields.
+    """
+    request_cls = catalog.request_class(resource_type, verb)
+    reason = catalog.unreachable_reason(resource_type, verb)
+    fields = ", ".join(sorted(catalog.request_fields(request_cls))) if request_cls else ""
+    return (
+        f"{spec.label} ({resource_type}) has {verb!r} in nebius SDK {_sdk_version()}, but it is "
+        f"not reachable through the generic tools: they address a resource by a single string "
+        f"id, and building the request failed with {reason}. Its request fields are: {fields}. "
+        f"{_dedicated_tool_hint(resource_type)} "
+        f"Available operations: {_available(resource_type)}."
+    )
 
 
 def _require(resource_type: str, verb: str) -> type:
@@ -71,11 +137,13 @@ def _require(resource_type: str, verb: str) -> type:
         )
     request_cls = catalog.request_class(resource_type, verb)
     if request_cls is None:
-        available = ", ".join(sorted(catalog.verbs(resource_type))) or "none"
         raise ToolError(
             f"{spec.label} ({resource_type}) does not support {verb!r} in nebius SDK "
-            f"{_sdk_version()}. Available operations: {available}."
+            f"{_sdk_version()}. Available operations: {_available(resource_type)}."
         )
+    # The RPC exists but the catalog withheld it: its request needs more than an ID.
+    if not catalog.supports(resource_type, verb):
+        raise ToolError(_unreachable_message(spec, resource_type, verb))
     return request_cls
 
 
@@ -175,7 +243,7 @@ def register(app: FastMCP) -> None:
     ) -> dict[str, Any]:
         spec = catalog.BY_KEY[resource_type]
         request_cls = _require(resource_type, "list")
-        fields = _request_fields(request_cls)
+        fields = catalog.request_fields(request_cls)
 
         resolved = parent_id or _profile_parent_id()
         kwargs: dict[str, Any] = {}
@@ -320,10 +388,13 @@ def register(app: FastMCP) -> None:
             "Run a lifecycle action (start, stop, restart, resume, activate, "
             "deactivate, undelete, cancel) on any Nebius resource that supports "
             "it. Gated by write mode. 'cancel' discards in-flight work and so "
-            "additionally requires the two-step confirm_token flow. Use "
-            "nebius_list_resource_types to see which actions a resource supports."
+            "additionally requires the two-step confirm_token flow. The "
+            "annotations on this tool describe the worst verb it accepts, not "
+            "the verb you pass: destructive because of 'cancel', non-idempotent "
+            "because of 'restart'. Use nebius_list_resource_types to see which "
+            "actions a resource supports."
         ),
-        annotations=STATE_ANNOTATIONS,
+        annotations=COMPOSITE_ACTION_ANNOTATIONS,
     )
     async def nebius_resource_action(
         resource_type: Annotated[

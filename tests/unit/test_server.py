@@ -26,9 +26,18 @@ def main_argv(argv: list[str]) -> None:
 
 
 def test_app_builds() -> None:
+    """The server must report the packaged version, not a copy of it.
+
+    Asserting a literal here would fail on every version bump — i.e. during the
+    release, which is exactly when the check should be quiet — while still not
+    catching the real bug, which is the server advertising a version that does
+    not match the wheel a client installed.
+    """
+    from nebius_mcp import __version__
+
     app = _build_app()
     assert app.name == "nebius-mcp"
-    assert app.version == "0.1.0"
+    assert app.version == __version__
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,18 @@
-"""Every mutating tool must refuse to run in read-only mode.
+"""Whole-tool-surface invariants about mutation: the gate, and the annotations.
 
-This is the load-bearing safety property: someone can point an agent at their
-cloud account and trust that nothing changes until they opt in. A single tool
-that forgets `require_write` silently breaks that promise, and the failure is
-invisible until something is already deleted.
+The gate: every mutating tool must refuse to run in read-only mode. This is the
+load-bearing safety property: someone can point an agent at their cloud account
+and trust that nothing changes until they opt in. A single tool that forgets
+`require_write` silently breaks that promise, and the failure is invisible until
+something is already deleted.
 
-Rather than spot-checking known tools, this enumerates the live tool surface
-and asserts the invariant over everything annotated as mutating — so a tool
-added later is covered without anyone remembering to add a test.
+The annotations: a client uses them to decide what to run without asking. They
+are static per tool, so a tool that dispatches several verbs can only tell the
+truth by describing the worst verb it accepts.
+
+Rather than spot-checking known tools, these enumerate the live tool surface
+and assert the invariants over everything they apply to — so a tool added later
+is covered without anyone remembering to add a test.
 """
 
 from __future__ import annotations
@@ -43,6 +48,13 @@ def _plausible_args(schema: dict[str, Any] | None) -> dict[str, Any]:
     return args
 
 
+# Verbs a tool may not describe as harmless, whatever else its enum admits.
+# `cancel` throws away in-flight work and cannot be undone; `restart` and
+# `delete` change the resource differently on each call rather than converging
+# on a state, so neither is idempotent. Extend this when a new verb is added.
+_UNSAFE_DISPATCH_VERBS = frozenset({"cancel", "delete", "restart"})
+
+
 @pytest.fixture(autouse=True)
 def _read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NEBIUS_MCP_MODE", raising=False)
@@ -69,6 +81,46 @@ async def test_every_mutating_tool_is_write_gated() -> None:
                 ungated.append(f"{tool.name}: {body[:120]}")
 
     assert not ungated, "mutating tools that did NOT refuse in read mode:\n" + "\n".join(ungated)
+
+
+async def test_verb_dispatchers_annotate_their_most_dangerous_verb() -> None:
+    """A tool that dispatches several verbs still gets exactly one annotation set.
+
+    MCP annotations are per tool, not per argument, so a client deciding what to
+    auto-approve applies them to every call it routes through that tool. A tool
+    whose enum admits a destructive or non-idempotent verb therefore has to
+    advertise the worst case, even though most of its verbs are benign —
+    under-claiming here is what turns into an unprompted call.
+    """
+    app = _build_app()
+    tools = [t.to_mcp_tool() for t in await app.list_tools()]
+
+    dispatchers: list[tuple[Any, str, list[str]]] = []
+    for tool in tools:
+        for param, spec in ((tool.inputSchema or {}).get("properties") or {}).items():
+            unsafe = sorted(set(spec.get("enum") or ()) & _UNSAFE_DISPATCH_VERBS)
+            if unsafe:
+                dispatchers.append((tool, param, unsafe))
+
+    assert dispatchers, (
+        "no verb dispatcher found on the tool surface; nebius_resource_action was "
+        "one, so either the enum vocabulary moved or this test now checks nothing"
+    )
+
+    for tool, param, unsafe in dispatchers:
+        annotations = tool.annotations
+        assert annotations is not None, f"{tool.name} has no annotations"
+        assert annotations.readOnlyHint is False, (
+            f"{tool.name} accepts {param}={unsafe} but claims readOnlyHint=True"
+        )
+        assert annotations.destructiveHint is True, (
+            f"{tool.name} accepts {param}={unsafe} but is annotated destructiveHint=False, "
+            "so a client that auto-approves non-destructive tools would run it unprompted"
+        )
+        assert annotations.idempotentHint is False, (
+            f"{tool.name} accepts {param}={unsafe} but is annotated idempotentHint=True, "
+            "so a client would believe retrying the call is free"
+        )
 
 
 async def test_read_tools_are_not_write_gated() -> None:

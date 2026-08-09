@@ -45,6 +45,22 @@ CREATE_ANNOTATIONS = {
     "openWorldHint": True,
 }
 
+# Composite tools that dispatch several verbs behind one tool name.
+#
+# MCP annotations are static per tool, so a dispatcher cannot describe its verbs
+# individually: whatever it advertises is what a client applies to *every* call
+# it makes. The only honest choice is the worst case across the verb set. These
+# values are deliberately identical to DESTRUCTIVE_ANNOTATIONS but carry a
+# different justification — a dispatcher is covered by this because one of its
+# verbs is destructive, not because the tool as a whole is a delete — so keep
+# the two constants separate even while they agree.
+COMPOSITE_ACTION_ANNOTATIONS = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+
 
 def register_delete_tool(
     app: FastMCP,

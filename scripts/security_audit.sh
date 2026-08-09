@@ -8,7 +8,9 @@
 #
 # The scanner needs to launch this server as a subprocess to enumerate its
 # tools. It does NOT invoke any tool, so no Nebius credentials are required
-# and nothing in your cloud account is touched.
+# and nothing in your cloud account is touched. To keep that true rather than
+# merely intended, the scanner is run with a constructed environment instead of
+# yours — see SCAN_ENV below.
 #
 # `scan` (full verification against Snyk's analysis service) needs SNYK_TOKEN.
 # Without one, this falls back to `inspect`, which enumerates the tool surface
@@ -16,12 +18,23 @@
 
 set -euo pipefail
 
+# Pin the scanner. `@latest` resolved to whatever was published most recently,
+# so two runs a day apart could audit the same tree with different code and
+# different rules, and an upgrade landed with nothing to review. Bump this
+# deliberately; check what is current with:
+#   curl -s https://pypi.org/pypi/snyk-agent-scan/json | python3 -c \
+#     'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
+SCANNER_VERSION="0.5.16"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 CONFIG="$ROOT/.mcp-config.local.json"
 REPORT="$(mktemp -t nebius-mcp-audit)"
+# A throwaway HOME for the scanner, so `~/.nebius/config.yaml` resolves to
+# nothing for it and for every process it starts.
+SCAN_HOME="$(mktemp -d -t nebius-mcp-audit-home)"
 
-cleanup() { rm -f "$CONFIG" "$REPORT"; }
+cleanup() { rm -f "$CONFIG" "$REPORT"; rm -rf "$SCAN_HOME"; }
 trap cleanup EXIT
 
 cat > "$CONFIG" <<JSON
@@ -35,8 +48,30 @@ cat > "$CONFIG" <<JSON
 }
 JSON
 
+# The environment handed to the scanner, built up rather than inherited.
+#
+# This is third-party code that launches subprocesses, and a machine set up for
+# this project typically has NEBIUS_IAM_TOKEN exported and a populated
+# ~/.nebius/config.yaml — live credentials for a real cloud account. Nothing in
+# enumerating a tool surface needs them, so nothing here passes them on. What is
+# left is what uv needs to resolve an interpreter and reuse its caches (without
+# UV_CACHE_DIR and UV_PYTHON_INSTALL_DIR, the redirected HOME would make uv
+# re-download everything into a directory this script then deletes).
+#
+# This narrows what the scanner is handed; it does not sandbox it. The process
+# still runs as you and can read any file you can, ~/.nebius/config.yaml
+# included, if it goes looking by absolute path.
+SCAN_ENV=(
+  PATH="$PATH"
+  HOME="$SCAN_HOME"
+  TMPDIR="${TMPDIR:-/tmp}"
+  UV_CACHE_DIR="$(uv cache dir)"
+  UV_PYTHON_INSTALL_DIR="$(uv python dir)"
+)
+
 if [ -n "${SNYK_TOKEN:-}" ]; then
   MODE=scan
+  SCAN_ENV+=(SNYK_TOKEN="$SNYK_TOKEN")
   echo "[security_audit] SNYK_TOKEN set — running full verification"
 else
   MODE=inspect
@@ -48,7 +83,8 @@ fi
 # it the scanner blocks on stdin, or — if stdin is closed, as in CI — records
 # "user_declined" and still exits 0, so the audit silently inspects nothing.
 # Consent is implicit here: the only server in the config is this repo's own.
-uvx snyk-agent-scan@latest "$MODE" "$CONFIG" \
+env -i "${SCAN_ENV[@]}" \
+  uvx "snyk-agent-scan@$SCANNER_VERSION" "$MODE" "$CONFIG" \
   --no-skills \
   --dangerously-run-mcp-servers \
   --suppress-mcpserver-io=true \

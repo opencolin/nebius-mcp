@@ -150,6 +150,147 @@ def test_service_account_profile_missing_keys_is_flagged(
     assert "public-key-id" in snap.profile_problem
 
 
+def test_empty_profile_is_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A profile with no fields at all cannot authenticate under any auth-type.
+
+    Verified against the installed SDK: ``Config`` constructs fine from this
+    file, then ``get_credentials`` raises
+    ``ConfigError: Missing auth-type in the profile.`` Before this was flagged,
+    ``check_environment`` reported ``has_credentials: true`` with no
+    ``next_steps`` and every real call failed — the same class as R-006/R-017,
+    where the preflight tool sends someone looking in the wrong place.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.active_profile == "prod"
+    assert snap.profile_problem is not None
+    assert "empty" in snap.profile_problem
+    assert snap.has_any is False
+
+
+def test_profile_with_only_parent_id_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """parent-id names a project; it is not a credential source.
+
+    Verified against the installed SDK: ``get_credentials`` on this profile
+    raises ``ConfigError: Missing auth-type in the profile.`` exactly as it does
+    for the empty one — no key other than ``auth-type`` or ``token-file`` feeds
+    credential resolution. The resolved ``parent-id`` is still reported, because
+    ``check_environment`` shows it and it is genuinely there.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod: {parent-id: project-abc123}\n", encoding="utf-8"
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.parent_id == "project-abc123"
+    assert snap.profile_problem is not None
+    assert "auth-type" in snap.profile_problem
+    assert "token-file" in snap.profile_problem
+    assert snap.has_any is False
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        (
+            "federation",
+            "    auth-type: federation\n    federation-id: federation-abc\n",
+        ),
+        (
+            "service-account",
+            "    auth-type: service account\n"
+            "    service-account-id: serviceaccount-a\n"
+            "    public-key-id: publickey-a\n"
+            "    private-key-file-path: /home/u/.nebius/key.pem\n",
+        ),
+        # token-file alone is enough: Config consults it *before* auth-type and
+        # returns a FileBearer, so requiring auth-type here would reject a
+        # profile the SDK authenticates from.
+        ("token-file", "    token-file: /home/u/.nebius/token\n"),
+        # An auth-type this module does not recognise is deliberately left to
+        # the SDK rather than guessed at.
+        ("unrecognised auth-type", "    auth-type: something-new\n"),
+    ],
+)
+def test_well_formed_profiles_are_still_reported_usable(
+    name: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-016 is this repo's cautionary tale: a rule that fires on correct input.
+
+    None of these may acquire a ``profile_problem``. The federation and
+    service-account profiles carry every field this module checks; ``token-file``
+    alone was confirmed sufficient against the installed SDK; and an
+    auth-type this module does not recognise is deliberately deferred to the SDK
+    rather than guessed at. This is the asymmetry R-016 named — tests that only
+    assert rejections cannot catch over-rejection.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"default: prod\nprofiles:\n  prod:\n{body}", encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.profile_problem is None, f"{name} profile wrongly reported broken"
+    assert snap.has_any is True
+
+
+def test_get_sdk_reports_an_empty_profile_when_no_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The specific problem, not the generic "nothing configured" message."""
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+
+    with pytest.raises(AuthError) as excinfo:
+        get_sdk()
+
+    assert "'prod'" in str(excinfo.value)
+    assert "empty" in str(excinfo.value)
+    reset_sdk()
+
+
+def test_empty_profile_plus_env_token_still_builds_an_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The R-017 interaction: rule 1 outranks any profile problem.
+
+    An empty profile is now a reported problem, and a config file *does* exist
+    here — so this exercises the ``Config``-based path with a token set, not the
+    no-config-file fast path. Flagging the profile must not resurrect the bug
+    where a token-carrying caller is refused.
+    """
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "ne1testtoken")
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+
+    assert resolve_credentials(config_path=cfg).profile_problem is not None
+    assert resolve_credentials(config_path=cfg).has_any is True  # the token carries it
+
+    sdk = get_sdk()
+
+    assert sdk is not None
+    reset_sdk()
+
+
 def test_env_token_wins_over_a_broken_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

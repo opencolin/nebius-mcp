@@ -84,7 +84,6 @@ Install the [Nebius CLI](https://docs.nebius.com/cli/install) and log in:
 
 ```bash
 nebius profile create
-nebius iam login
 ```
 
 That writes `~/.nebius/config.yaml`, which this server reads automatically.
@@ -379,7 +378,7 @@ Credentials resolve in this order:
 2. **`NEBIUS_PROFILE`** — a named profile in `~/.nebius/config.yaml`. Set this
    only if you want a profile other than the file's own default; setting it to a
    name that does not exist is a common way to break a working setup.
-3. **The default profile** in `~/.nebius/config.yaml`, set by `nebius iam login`.
+3. **The default profile** in `~/.nebius/config.yaml`, set by `nebius profile create`.
 
 Run `check_environment` to see which one resolved. It reports the problem
 precisely if a profile exists but cannot authenticate.
@@ -513,20 +512,34 @@ In Codex, also raise `startup_timeout_sec` — the default is 10 seconds.
 <details>
 <summary>"Nebius profile is not usable" / "No Nebius credentials found"</summary>
 
-Your profile exists but cannot authenticate — for example `auth-type:
-federation` with no `federation-id`. Re-run:
+Your profile exists but cannot authenticate. The common case is `auth-type:
+federation` with no `federation-id` — the profile parses, so nothing complains
+until the first API call. `check_environment` names the missing field.
+
+Repair it in place:
 
 ```bash
-nebius iam login
+nebius config set federation-id <id>
 ```
 
-Or bypass the profile with a token:
+Add `-p <profile>` to target a profile other than the active one, or recreate
+the profile with `nebius profile create --federation-id <id>`.
+
+This case hides easily: a cached CLI session keeps `nebius` itself working, so
+the CLI succeeds while the server fails, and an exported token makes the server
+work too — masking the broken profile until the token expires.
+
+To bypass the profile entirely rather than fix it:
 
 ```bash
 export NEBIUS_IAM_TOKEN=$(nebius iam get-access-token)
 ```
 
-Tokens last 12 hours.
+Tokens last 12 hours, and a GUI-launched client will not inherit one you
+exported in a terminal — put it in the client's `env` block instead. Treat a
+token that has been printed anywhere as compromised; `nebius iam
+session-management revoke --all-my-active` revokes it, along with every other
+active session.
 
 </details>
 

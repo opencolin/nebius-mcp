@@ -10,8 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastmcp import Client
 
+from nebius_mcp import catalog
 from nebius_mcp.client import reset_clients
 from nebius_mcp.server import _build_app
+from nebius_mcp.tools import generic
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +132,109 @@ async def test_unsupported_verb_reports_available_operations(
     text = result.content[0].text
     assert "does not support 'delete'" in text
     assert "Available operations" in text
+
+
+def _withheld(verb: str) -> str | None:
+    """A resource whose SDK exposes ``verb`` but whose request we cannot build.
+
+    Derived from the installed SDK rather than named, so the test tracks the
+    SDK instead of pinning today's eight known pairs.
+    """
+    for spec in catalog.RESOURCES:
+        if verb in catalog.sdk_verbs(spec.key) and not catalog.supports(spec.key, verb):
+            return spec.key
+    return None
+
+
+async def test_unbuildable_verb_is_not_reported_as_unsupported(
+    monkeypatch: pytest.MonkeyPatch, mock_service: defaultdict[type, MagicMock]
+) -> None:
+    """Reporting this as an unsupported verb would be false: the RPC exists.
+
+    What is missing is a way to express the request with a single string id, and
+    the message has to distinguish those so the caller stops looking for a typo.
+    """
+    resource_type = _withheld("delete")
+    if resource_type is None:  # pragma: no cover - true of every SDK shipped so far
+        pytest.skip("installed SDK builds every delete request from an id")
+
+    monkeypatch.setenv("NEBIUS_MCP_MODE", "write")
+    app = _build_app()
+    async with Client(app) as c:
+        result = await c.call_tool(
+            "nebius_resource_delete",
+            {"resource_type": resource_type, "id": "x"},
+            raise_on_error=False,
+        )
+    assert result.is_error
+    text = result.content[0].text
+    assert "does not support" not in text
+    assert "not reachable through the generic tools" in text
+    # The SDK's own construction error names the offending field or type.
+    assert "TypeError" in text
+    # Rejected before any token was minted or any client was touched.
+    assert "confirm_token" not in text
+    assert not mock_service[catalog.client_class(resource_type)].delete.called
+
+
+async def test_unbuildable_action_is_rejected_before_execution(
+    monkeypatch: pytest.MonkeyPatch, mock_service: defaultdict[type, MagicMock]
+) -> None:
+    candidates = [(v, _withheld(v)) for v in generic._ACTIONS]
+    pair = next(((v, k) for v, k in candidates if k is not None), None)
+    if pair is None:  # pragma: no cover - true of every SDK shipped so far
+        pytest.skip("installed SDK builds every action request from an id")
+    action, resource_type = pair
+
+    monkeypatch.setenv("NEBIUS_MCP_MODE", "write")
+    app = _build_app()
+    async with Client(app) as c:
+        result = await c.call_tool(
+            "nebius_resource_action",
+            {"resource_type": resource_type, "action": action, "id": "x"},
+            raise_on_error=False,
+        )
+    assert result.is_error
+    assert "not reachable through the generic tools" in result.content[0].text
+    assert not getattr(mock_service[catalog.client_class(resource_type)], action).called
+
+
+async def test_list_resource_types_hides_unbuildable_operations() -> None:
+    """The advertisement and the error message must agree about what works."""
+    app = _build_app()
+    async with Client(app) as c:
+        data = _payload(await c.call_tool("nebius_list_resource_types", {}))["data"]
+    advertised = {r["resource_type"]: set(r["operations"]) for r in data["resource_types"]}
+    for spec in catalog.RESOURCES:
+        withheld = catalog.sdk_verbs(spec.key) - catalog.verbs(spec.key)
+        assert not (advertised[spec.key] & withheld), spec.key
+
+
+def test_dedicated_tool_hint_names_a_tool_when_one_exists() -> None:
+    hint = generic._dedicated_tool_hint("compute.instance")
+    assert "compute_delete_instance" in hint
+
+
+def test_dedicated_tool_hint_says_so_when_nothing_covers_the_resource() -> None:
+    hint = generic._dedicated_tool_hint("iam.access_key")
+    assert "No dedicated tool" in hint
+
+
+async def test_dedicated_tool_hints_name_real_tools() -> None:
+    """Pointing at a tool that does not exist is worse than pointing nowhere.
+
+    One-directional on purpose: a newly added dedicated tool that nobody mapped
+    only costs a missed hint, but a stale name in the map is a wrong answer.
+    """
+    app = _build_app()
+    async with Client(app) as c:
+        registered = {t.name for t in await c.list_tools()}
+    named = {name for names in generic._DEDICATED_TOOLS.values() for name in names}
+    assert named <= registered, sorted(named - registered)
+
+
+def test_dedicated_tool_hints_use_known_resource_types() -> None:
+    assert set(generic._DEDICATED_TOOLS) <= set(catalog.BY_KEY)
 
 
 async def test_delete_requires_write_mode(monkeypatch: pytest.MonkeyPatch) -> None:

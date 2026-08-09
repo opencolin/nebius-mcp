@@ -49,10 +49,10 @@ class CredentialResolution:
     """Set when the active profile exists but cannot produce credentials.
 
     A profile being *present* is not the same as it being *usable*: a
-    ``federation`` profile with no ``federation-id``, or a service-account
-    profile missing its key, parses fine and then fails on the first API call.
-    Reporting only presence gives false confidence at exactly the moment
-    someone is trying to work out why every tool errors.
+    ``federation`` profile with no ``federation-id``, a service-account profile
+    missing its key, or one naming no credential source at all, parses fine and
+    then fails on the first API call. Reporting only presence gives false
+    confidence exactly when someone is working out why every tool errors.
     """
 
     @property
@@ -129,13 +129,44 @@ def _profile_problem(profile: Mapping[str, object]) -> str | None:
     here turns a first-tool-call ``ConfigError`` into an answer from
     ``check_environment``, which is where someone debugging will look.
     """
+    # ``Config.get_credentials`` consults ``token-file`` *before* ``auth-type``
+    # and builds a ``FileBearer`` from it, so a profile carrying one needs no
+    # other key — and its auth-type fields, if any, are never read. Checking
+    # those first would report a working profile as broken.
+    if profile.get("token-file"):
+        return None
+
     auth_type = str(profile.get("auth-type") or "").strip().lower()
+
+    if not auth_type:
+        # With no ``token-file`` and no env token, ``Config.get_credentials``
+        # raises ``ConfigError: Missing auth-type in the profile.`` whatever
+        # else the profile holds — nothing else on it feeds credential
+        # resolution. So this one condition covers the empty profile and the
+        # ``parent-id``-only / ``endpoint``-only shapes alike; both were
+        # confirmed to fail against the installed SDK. An explicit
+        # ``NEBIUS_IAM_TOKEN`` outranks all of it, and ``get_sdk`` honours that
+        # before consulting this result.
+        if not profile:
+            return (
+                "the profile is empty — it defines no fields at all, so no "
+                "credential source is configured. Run `nebius profile create` to "
+                "populate it, or set NEBIUS_IAM_TOKEN."
+            )
+        return (
+            "the profile has neither 'auth-type' nor 'token-file', so no credential "
+            "source is configured (parent-id and endpoint do not authenticate). "
+            "Run `nebius profile create` to populate it, or set NEBIUS_IAM_TOKEN."
+        )
 
     if auth_type in {"federation", "federated"}:
         if not profile.get("federation-id"):
             return (
                 "auth-type is 'federation' but the profile has no 'federation-id'. "
-                "Run `nebius iam login` to rewrite the profile, or set NEBIUS_IAM_TOKEN."
+                "Repair it in place with `nebius config set federation-id <id>` "
+                "(add `-p <profile>` to target a profile other than the active one), "
+                "recreate it with `nebius profile create --federation-id <id>`, or "
+                "set NEBIUS_IAM_TOKEN."
             )
         return None
 
@@ -150,7 +181,7 @@ def _profile_problem(profile: Mapping[str, object]) -> str | None:
             return f"auth-type is '{auth_type}' but the profile is missing: {', '.join(missing)}."
         return None
 
-    # Any other auth-type (including absent) is left to the SDK. Only flag what
+    # Any other (i.e. unrecognised) auth-type is left to the SDK. Only flag what
     # has been confirmed to fail, so this never blocks a working setup.
     return None
 
@@ -247,7 +278,7 @@ def get_sdk() -> SDK:
                 return _sdk_instance
             raise AuthError(
                 f"Could not build a Nebius client from {snapshot.config_file_path}: {exc}. "
-                "Run `nebius iam login` to refresh the profile, or set NEBIUS_IAM_TOKEN."
+                "Run `nebius profile create` to rebuild the profile, or set NEBIUS_IAM_TOKEN."
             ) from exc
         return _sdk_instance
 
@@ -281,7 +312,7 @@ def _no_credentials_message(snapshot: CredentialResolution) -> str:
         "No Nebius credentials found. Configure one of:",
         "  1. export NEBIUS_IAM_TOKEN=<short-lived bearer token>",
         f"  2. ensure {snapshot.config_file_path} exists with a valid profile",
-        "     (run `nebius profile create` then `nebius iam login`)",
+        "     (run `nebius profile create`)",
         "  3. set NEBIUS_PROFILE to point at a profile in that config file",
     ]
     if snapshot.error:

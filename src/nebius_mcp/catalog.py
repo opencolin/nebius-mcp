@@ -18,6 +18,29 @@ modules contain at least one alias that does not resolve (e.g.
 
 So we try ``get_type_hints`` first and fall back to parsing the alias name,
 which encodes the proto path directly.
+
+Existence is not reachability
+-----------------------------
+A client having a method called ``delete`` does not mean the generic tools can
+call it. ``nebius_resource_get``, ``_delete`` and ``_action`` all build
+``request_cls(id=...)``, and several requests cannot be built that way: they
+name the identifier differently (``FederationServiceClient.activate`` wants
+``federation_id``), need more than one identifier (a PostgreSQL backup is
+addressed by ``backup_id`` *and* ``cluster_id``), take a whole spec instead of
+an ID (``AuditEventExportServiceClient.start``), or declare a field literally
+called ``id`` that is a nested message rather than a string
+(``DeleteAccessKeyRequest.id`` is a ``KeyIdentity``, so even a field-name check
+passes and construction still fails).
+
+:func:`verbs` therefore probes the request class with the exact keyword
+arguments the generic layer would pass and reports only what actually builds.
+The unreachable set is *derived* from the installed SDK for the same reason the
+request classes are: a hard-coded list of known-bad pairs desyncs from reality
+on the next upgrade. Probing is safe to cache and safe to do eagerly —
+constructing a generated message assigns fields in memory
+(``nebius.base.protos.direct.Message.__init__``) and performs no I/O.
+:func:`sdk_verbs` still reports the unfiltered SDK surface, which the generic
+tools use to explain *why* an operation they will not run nevertheless exists.
 """
 
 from __future__ import annotations
@@ -46,6 +69,28 @@ ALL_VERBS = (
         "estimate",
     )
 )
+
+# Lifecycle verbs ``nebius_resource_action`` dispatches. This tuple is the one
+# the tool builds its ``action`` enum from, so the shape probe below and the
+# tool cannot disagree about which verbs are addressed by ID.
+ACTION_VERBS = (
+    "start",
+    "stop",
+    "restart",
+    "resume",
+    "activate",
+    "deactivate",
+    "undelete",
+    "cancel",
+)
+
+# Verbs the generic tools invoke as ``request_cls(id=...)``: nebius_resource_get,
+# nebius_resource_delete and every action above.
+_ID_SHAPED_VERBS = frozenset({"get", "delete", *ACTION_VERBS})
+
+# Placeholder for shape probing. Never reaches an API — see the module
+# docstring; requests are built only to see whether they *can* be built.
+_PROBE = "generic-shape-probe"
 
 
 @dataclass(frozen=True)
@@ -373,10 +418,80 @@ def request_class(key: str, verb: str) -> type | None:
     return _resolve_alias(alias) if isinstance(alias, str) else None
 
 
+def request_fields(request_cls: type) -> frozenset[str]:
+    """Python field names on a generated request message."""
+    try:
+        return frozenset(request_cls._public_fields_by_python_name())  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - generated classes all expose this
+        return frozenset()
+
+
+def _probe_kwargs(verb: str, request_cls: type) -> dict[str, object]:
+    """The keyword arguments ``tools/generic.py`` would pass, with dummy values.
+
+    Mirrors ``nebius_resource_get``/``_delete``/``_action`` (``id=``),
+    ``nebius_resource_get_by_name`` (``parent_id=``, ``name=``) and
+    ``nebius_resource_list``'s scope field. The optional list passthroughs
+    (``page_size``, ``page_token``, ``filter``) are deliberately left out: the
+    tool sets them only when the field exists, and assigning some of them makes
+    the SDK log a deprecation warning (the compute ``filter`` fields do). A
+    probe that exists only to compute a truth value must emit nothing.
+    """
+    if verb in _ID_SHAPED_VERBS:
+        return {"id": _PROBE}
+    if verb == "get_by_name":
+        return {"parent_id": _PROBE, "name": _PROBE}
+    if verb == "list":
+        fields = request_fields(request_cls)
+        scope = "parent_id" if "parent_id" in fields else "resource_id"
+        return {scope: _PROBE} if scope in fields else {}
+    return {}
+
+
+@cache
+def unreachable_reason(key: str, verb: str) -> str | None:
+    """Why the generic tools cannot build this verb's request, or None if they can.
+
+    Returns the SDK's own ``TypeError`` text, which names the offending field or
+    type and is far more actionable than "unsupported". A verb the SDK does not
+    expose at all also returns None — that is a different failure, and callers
+    check :func:`sdk_verbs` first to tell the two apart.
+    """
+    request_cls = request_class(key, verb)
+    if request_cls is None:
+        return None
+    try:
+        request_cls(**_probe_kwargs(verb, request_cls))
+    except Exception as exc:  # any construction failure disqualifies the verb
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+@cache
+def sdk_verbs(key: str) -> frozenset[str]:
+    """Every verb of ``ALL_VERBS`` the installed SDK exposes on this client.
+
+    Includes verbs the generic tools cannot actually invoke; :func:`verbs` is
+    the subset that works. Used to tell "this RPC does not exist" apart from
+    "this RPC exists but not in a shape the generic tools can build".
+    """
+    return frozenset(v for v in ALL_VERBS if request_class(key, v) is not None)
+
+
 @cache
 def verbs(key: str) -> frozenset[str]:
-    """Verbs actually available on this resource in the installed SDK."""
-    return frozenset(v for v in ALL_VERBS if request_class(key, v) is not None)
+    """Verbs advertised for this resource: present in the SDK *and* constructible.
+
+    A verb whose request the generic layer cannot build is omitted, so
+    ``nebius_list_resource_types`` never advertises an operation that is
+    guaranteed to fail. See "Existence is not reachability" in the module
+    docstring.
+
+    Note this is still a superset of what the generic *tools* dispatch: verbs
+    such as ``create`` and ``update`` have no generic tool at all yet, and are
+    reported because a dedicated tool may cover them.
+    """
+    return frozenset(v for v in sdk_verbs(key) if unreachable_reason(key, v) is None)
 
 
 def supports(key: str, verb: str) -> bool:
@@ -423,7 +538,11 @@ def list_items_field(key: str) -> str | None:
 
 
 def describe(spec: ResourceSpec) -> dict[str, object]:
-    """Machine-readable summary used by ``nebius_list_resource_types``."""
+    """Machine-readable summary used by ``nebius_list_resource_types``.
+
+    ``operations`` lists only verbs whose request the generic layer can build,
+    so discovery never points a caller at an operation that always fails.
+    """
     return {
         "resource_type": spec.key,
         "label": spec.label,
