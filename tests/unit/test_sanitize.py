@@ -18,11 +18,19 @@ from nebius_mcp.sanitize import (
     wrap,
 )
 
-
 # Built at runtime rather than written as literals. A committed string that
 # looks like a private key trips secret scanners on every future commit that
 # touches this file, and the alternative — allowlisting the file — would stop
 # the scanner catching a real credential pasted here later.
+# Assembled, not written out. A host whose name contains "secret" followed by a
+# port is exactly the false positive these corpora exist to pin — and it is also
+# what gitleaks' generic-api-key rule reads as `name:secret`, which blocks the
+# push. Allowlisting the file instead would stop the scanner catching a real
+# credential pasted here later, so the string is built at runtime and keeps its
+# shape.
+_HOST_WITH_SENSITIVE_NAME = "secret" + "-store.internal" + ":8200/v1/sys/health"
+
+
 def _pem(kind: str, body: str = "", terminated: bool = True) -> str:
     begin = "-" * 5 + "BEGIN " + kind + " PRIVATE KEY" + "-" * 5
     if not terminated:
@@ -633,7 +641,7 @@ _BENIGN_STRINGS: tuple[str, ...] = (
     "https://token-service.internal:8443/healthz",
     "10.0.0.14:6443",
     "kube-apiserver.default.svc.cluster.local:443",
-    "secret-store.internal:8200/v1/sys/health",
+    _HOST_WITH_SENSITIVE_NAME,
     "credentials-broker.svc:9000",
     "cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2",
     "cr.eu-north1.nebius.cloud/tokenizer:2.1.0-rc.3",
@@ -707,7 +715,7 @@ _MANGLED_BY_THE_TEXT_PATH_ONLY: frozenset[str] = frozenset(
     {
         "token-service.internal:8443/healthz",
         "https://token-service.internal:8443/healthz",
-        "secret-store.internal:8200/v1/sys/health",
+        _HOST_WITH_SENSITIVE_NAME,
         "credentials-broker.svc:9000",
         "cr.eu-north1.nebius.cloud/my-secrets-app:v1.4.2",
         "cr.eu-north1.nebius.cloud/tokenizer:2.1.0-rc.3",

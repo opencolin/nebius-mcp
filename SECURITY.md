@@ -53,11 +53,11 @@ It does not trust:
 
 | Threat | Status | Enforcing code | What that actually buys you |
 |---|---|---|---|
-| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:114`, `src/nebius_mcp/sanitize.py:210` | Every tool result carrying Nebius API content is wrapped in an envelope telling the model the content is data, not instructions. (Three tools return an unwrapped value today — `ping`, `check_environment`, `get_manifest` — and none of them touches the Nebius API.) This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
-| Accidental destruction by the model | Partial | `src/nebius_mcp/confirm.py:113`, `src/nebius_mcp/confirm.py:41` | A delete refuses on the first call and returns a preview plus a single-use token bound to the exact arguments, valid 120 seconds. It stops a single mis-aimed call and puts the target in the transcript before anything happens. It is **not** an injection defense: the token goes to the model, the model replays it, and no human is required — `tests/unit/test_destructive_flow.py:98` mints and consumes one in two back-to-back calls. |
+| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:227`, `src/nebius_mcp/sanitize.py:332` | Every tool result carrying Nebius API content is wrapped in an envelope telling the model the content is data, not instructions. (Three tools return an unwrapped value today — `ping`, `check_environment`, `get_manifest` — and none of them touches the Nebius API.) This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
+| Accidental destruction by the model | Partial | `src/nebius_mcp/confirm.py:122`, `src/nebius_mcp/confirm.py:41` | A delete refuses on the first call and returns a preview plus a single-use token bound to the exact arguments, valid 120 seconds. It stops a single mis-aimed call and puts the target in the transcript before anything happens. It is **not** an injection defense: the token goes to the model, the model replays it, and no human is required — `tests/unit/test_destructive_flow.py:98` mints and consumes one in two back-to-back calls. |
 | Tool poisoning and rug pull | Partial | `src/nebius_mcp/manifest.py:49`, `src/nebius_mcp/tools/ops.py:174` | `get_manifest` returns a SHA-256 over every tool name, description, annotation and input schema, so a changed tool surface is detectable between sessions. Detection only, and only if you record the hash out of band and compare it. A server that is already hostile can return any hash it likes. |
-| Credential blast radius | **Not mitigated** | `src/nebius_mcp/server.py:54`, `src/nebius_mcp/confirm.py:104` | The server acts with the full permissions of whatever token or profile it resolved, and never narrows them. Write mode is one global boolean — see below. |
-| Secret exfiltration | Partial | `src/nebius_mcp/sanitize.py:184`, `src/nebius_mcp/sanitize.py:28`, `src/nebius_mcp/tools/secrets.py:234` | Known-sensitive field names and token-shaped values are redacted recursively from every response that goes through the sanitizer. This is a denylist: a field the list does not name is returned verbatim. Two API-sourced values do not go through it at all, and both are deliberate: `secrets_reveal_payload`'s plaintext, and every paginated list tool's `next_page_token` (whose own field name matches the denylist, so redacting it would replace every pagination cursor). The rule that catches a credential written *inside* a string runs on the error path only — see Known gaps. |
+| Credential blast radius | **Not mitigated** | `src/nebius_mcp/server.py:54`, `src/nebius_mcp/confirm.py:113` | The server acts with the full permissions of whatever token or profile it resolved, and never narrows them. Write mode is one global boolean — see below. |
+| Secret exfiltration | Partial | `src/nebius_mcp/sanitize.py:28`, `src/nebius_mcp/sanitize.py:140`, `src/nebius_mcp/tools/secrets.py:234` | Known-sensitive field names and token-shaped values are redacted recursively from every response that goes through the sanitizer. This is a denylist: a field the list does not name is returned verbatim. The value patterns run on both paths and cover JWTs, `ne1…` Nebius tokens, PEM private-key blocks, presigned-URL parameters, URL userinfo, and GitHub, Slack, AWS and Azure credential shapes — but they are still a denylist, and every issuer not on that list is returned in the clear. Two API-sourced values do not go through the sanitizer at all, and both are deliberate: `secrets_reveal_payload`'s plaintext, and every paginated list tool's `next_page_token` (whose own field name matches the denylist, so redacting it would replace every pagination cursor). The separate rule that catches a credential written as `name=value` *inside* a string runs on the error path only — see Known gaps. |
 | Audit tampering | **Not mitigated** | `src/nebius_mcp/audit.py:86`, `src/nebius_mcp/audit.py:57` | Every tool call is logged as JSON to the server's own stderr: tool name, a truncated SHA-256 of the arguments, mode, outcome. There is no integrity protection, no sequence numbering and no remote sink, so anyone who can run the server can drop or forge lines. The log also records an argument *hash*, not the arguments, so it tells you a delete tool was called but not what it targeted — nor, see R-011 under Known gaps, whether the call executed or only previewed. |
 | Supply-chain compromise | Partial | `.github/workflows/release.yml:94`, `.github/workflows/ci.yml:67` | Releases publish through PyPI Trusted Publishing (OIDC), so there is no long-lived API token in the repository to steal. gitleaks runs in CI and as a pre-commit hook. Against that: every GitHub Action is pinned to a full commit SHA with the human-readable tag kept as a trailing comment, so re-pointing a tag no longer changes what runs — but nothing renews those pins, so they go stale silently and a pinned action stops receiving its own security fixes; `uv.lock` binds CI only, and anyone installing from PyPI resolves dependencies freshly within the version ranges in `pyproject.toml`; and nothing in this repository verifies a published artifact after the fact. |
 
@@ -103,17 +103,26 @@ inventing a schedule that does not exist.
 
 - **The in-string assignment rule runs on one path only.** The sanitizer has
   two ways to catch a credential. Field names are matched wherever the payload
-  is a mapping. A secret written *inside* a string — `db_password=hunter2` in
-  an error message, a query string, a cloud-init fragment quoted into a
-  description — needs `_ASSIGNMENT_PATTERN`
-  (`src/nebius_mcp/sanitize.py:229`), and that rule runs only in `redact_text`,
-  which is the error path. `redact`, which every successful response goes
-  through, applies the value patterns and nothing else. So the same credential
-  is removed from a failure and returned from a success. Two attempts to close
-  this were reverted, both for damage that only benchmarking found; R-015
-  records what they cost. Tracked as R-012 in
-  [docs/REVIEW-FINDINGS.md](docs/REVIEW-FINDINGS.md), with the shapes no rule
-  names at all as R-013.
+  is a mapping, and the value patterns run on both paths. But a secret written
+  as `name=value` *inside* a string — `db_password=hunter2` in an error
+  message, a query string, a cloud-init fragment quoted into a description —
+  needs `_redact_assignments` (`src/nebius_mcp/sanitize.py:488`), and that rule
+  runs only in `redact_text` (`src/nebius_mcp/sanitize.py:517`), which is the
+  error path. `redact` (`src/nebius_mcp/sanitize.py:306`), which every
+  successful response goes through, applies the value patterns and nothing
+  else. So the same credential is removed from a failure and returned from a
+  success. Three attempts have now been made. Two moved the rule and were
+  reverted for damage only benchmarking found; the third rewrote it in place
+  and deliberately did not move it, because on the success path the rule still
+  strips the port off `token-service.internal:8443` and the tag off
+  `my-secrets-app:v1.4.2`. Tracked as R-015 in
+  [docs/REVIEW-FINDINGS.md](docs/REVIEW-FINDINGS.md).
+
+  Two narrower findings under this heading are now **closed** and are no longer
+  gaps: R-012, the quoted spelling (`{"secret_key": "…"}`) defeating the rule
+  on the error path, and R-013, the credential shapes no rule named at all —
+  URL userinfo, GitHub, Slack, AWS and Azure — which became value patterns and
+  so close on both paths.
 - **The audit log cannot tell a previewed delete from an executed one.** Both
   calls of the confirm two-step return without raising, so both are logged
   `outcome: "ok"` (`src/nebius_mcp/audit.py:116`) — the first having deleted
