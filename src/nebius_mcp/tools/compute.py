@@ -611,7 +611,9 @@ def register(app: FastMCP) -> None:
             "may differ. ssh_public_key must be exactly one OpenSSH public key "
             "line of printable ASCII — multi-line values are rejected — and the "
             "preview reports that key's ssh-keygen fingerprint rather than the "
-            "key itself. Boot disk minimum is 50 GiB. Disk types use underscores "
+            "key itself. The CUDA image families need a boot disk of at least "
+            "50 GiB for their driver stack; other images have no floor beyond "
+            "what Nebius enforces. Disk types use underscores "
             "(network_ssd, not network-ssd). The key is authorized for user "
             "'nebius', who has passwordless sudo. Gated by write mode."
         ),
