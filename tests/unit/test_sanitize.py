@@ -1011,3 +1011,51 @@ def test_openai_usage_counters_survive() -> None:
     }
 
     assert redact(usage) == usage
+
+
+# (label, string, the substring that must not survive). The scheme sits between
+# the field name and the credential, and the assignment rule's value stops at
+# whitespace — so the word "Bearer" was redacted and the token returned. These
+# are the renderings a gRPC error actually uses.
+_AUTH_HEADER_CASES: list[tuple[str, str, str]] = [
+    ("bare", "authorization: Bearer " + "ne1opaque" + "AAAABBBBCCCC", "ne1opaque" + "AAAABBBBCCCC"),
+    (
+        "capitalised",
+        "Authorization: Bearer " + "sk_live_" + "51H8xQ2KzYcV",
+        "sk_live_" + "51H8xQ2KzYcV",
+    ),
+    ("json", '{"authorization": "Bearer ' + "ne1opaqueTOKEN" + '"}', "ne1opaqueTOKEN"),
+    ("tuple", "metadata=(('authorization', 'Bearer " + "TUPLETOKEN77" + "'),)", "TUPLETOKEN77"),
+    ("basic", "proxy-authorization: Basic " + "dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+    ("api_key", "x-api-key: " + "abcdef1234567890", "abcdef1234567890"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "cleartext"),
+    [(t, c) for _, t, c in _AUTH_HEADER_CASES],
+    ids=[n for n, _, _ in _AUTH_HEADER_CASES],
+)
+def test_an_auth_scheme_is_not_the_credential(text: str, cleartext: str) -> None:
+    """R-024, and it has to hold on BOTH paths.
+
+    The in-string assignment rule does not run in ``redact``, so covering this
+    there required a value pattern rather than a fix to that rule.
+    """
+    assert cleartext not in redact({"h": text})["h"]
+    assert cleartext not in redact_text(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "authorization, and other headers are logged",
+        "authorization required for this operation",
+        "the authorization model is RBAC",
+        "x-api-key header is missing from the request",
+    ],
+)
+def test_auth_prose_is_not_eaten(text: str) -> None:
+    """A comma only counts as a separator when the name is quoted, because an
+    unquoted one is prose. Without that the first case loses its next word."""
+    assert redact({"h": text})["h"] == text

@@ -24,12 +24,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Retracted claims. Both are wrong about the MCP specification: no annotation
-# obliges a client to prompt, and the confirm-token two-step is a mistake
-# guard, not an injection defense (see src/nebius_mcp/confirm.py).
+# Retracted claims — strings that were wrong and must not come back.
+#
+# The first two are wrong about the MCP specification: no annotation obliges a
+# client to prompt, and the confirm-token two-step is a mistake guard, not an
+# injection defense (see src/nebius_mcp/confirm.py).
+#
+# The third is a command that does not exist. `nebius iam login` was cited in
+# five separate remediation messages and three places in the README, including
+# the one shown when a federation profile is missing its federation-id — so the
+# advice given at the exact moment someone is stuck sent them to a command the
+# CLI rejects with `unknown command "login" for "nebius iam"`. The real remedies
+# are `nebius config set federation-id <id>` and `nebius profile create`, both
+# verified against the CLI. It reappeared twice while being fixed, which is why
+# it is pinned here rather than merely corrected.
 RETRACTED_CLAIMS: tuple[str, ...] = (
     "spec-recommended mitigation",
     "so well-behaved clients prompt the user",
+    "nebius iam login",
 )
 
 # path/to/file.py:123 — the form used in the SECURITY.md threat table. The
@@ -55,6 +67,26 @@ def find_retracted_claims(src: Path) -> list[str]:
             if claim in flat
         )
     return problems
+
+
+def check_retracted_in_file(path: Path) -> list[str]:
+    """Same check, for a single non-Python file.
+
+    ``find_retracted_claims`` globs ``*.py``, which covers the code but not the
+    README — and three of the nine `nebius iam login` references lived there,
+    including the quick-start step every new user runs. Scoped to named files
+    rather than all markdown on purpose: ``docs/REVIEW-FINDINGS.md`` and
+    ``docs/plans/`` quote the retracted strings as history, and a record of what
+    was wrong is not the same as repeating it.
+    """
+    if not path.exists():
+        return [f"{path.name} does not exist"]
+    flat = _WHITESPACE.sub(" ", path.read_text(encoding="utf-8")).lower()
+    return [
+        f"{path.name}: retracted claim {claim!r} is back"
+        for claim in RETRACTED_CLAIMS
+        if claim in flat
+    ]
 
 
 def check_citations(doc: Path) -> list[str]:
@@ -83,7 +115,11 @@ def check_citations(doc: Path) -> list[str]:
 
 
 def main() -> int:
-    problems = find_retracted_claims(ROOT / "src") + check_citations(ROOT / "SECURITY.md")
+    problems = (
+        find_retracted_claims(ROOT / "src")
+        + check_retracted_in_file(ROOT / "README.md")
+        + check_citations(ROOT / "SECURITY.md")
+    )
 
     if problems:
         print(f"Security-doc problems ({len(problems)}):", file=sys.stderr)

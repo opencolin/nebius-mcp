@@ -150,6 +150,147 @@ def test_service_account_profile_missing_keys_is_flagged(
     assert "public-key-id" in snap.profile_problem
 
 
+def test_empty_profile_is_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A profile with no fields at all cannot authenticate under any auth-type.
+
+    Verified against the installed SDK: ``Config`` constructs fine from this
+    file, then ``get_credentials`` raises
+    ``ConfigError: Missing auth-type in the profile.`` Before this was flagged,
+    ``check_environment`` reported ``has_credentials: true`` with no
+    ``next_steps`` and every real call failed — the same class as R-006/R-017,
+    where the preflight tool sends someone looking in the wrong place.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.active_profile == "prod"
+    assert snap.profile_problem is not None
+    assert "empty" in snap.profile_problem
+    assert snap.has_any is False
+
+
+def test_profile_with_only_parent_id_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """parent-id names a project; it is not a credential source.
+
+    Verified against the installed SDK: ``get_credentials`` on this profile
+    raises ``ConfigError: Missing auth-type in the profile.`` exactly as it does
+    for the empty one — no key other than ``auth-type`` or ``token-file`` feeds
+    credential resolution. The resolved ``parent-id`` is still reported, because
+    ``check_environment`` shows it and it is genuinely there.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default: prod\nprofiles:\n  prod: {parent-id: project-abc123}\n", encoding="utf-8"
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.parent_id == "project-abc123"
+    assert snap.profile_problem is not None
+    assert "auth-type" in snap.profile_problem
+    assert "token-file" in snap.profile_problem
+    assert snap.has_any is False
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        (
+            "federation",
+            "    auth-type: federation\n    federation-id: federation-abc\n",
+        ),
+        (
+            "service-account",
+            "    auth-type: service account\n"
+            "    service-account-id: serviceaccount-a\n"
+            "    public-key-id: publickey-a\n"
+            "    private-key-file-path: /home/u/.nebius/key.pem\n",
+        ),
+        # token-file alone is enough: Config consults it *before* auth-type and
+        # returns a FileBearer, so requiring auth-type here would reject a
+        # profile the SDK authenticates from.
+        ("token-file", "    token-file: /home/u/.nebius/token\n"),
+        # An auth-type this module does not recognise is deliberately left to
+        # the SDK rather than guessed at.
+        ("unrecognised auth-type", "    auth-type: something-new\n"),
+    ],
+)
+def test_well_formed_profiles_are_still_reported_usable(
+    name: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-016 is this repo's cautionary tale: a rule that fires on correct input.
+
+    None of these may acquire a ``profile_problem``. The federation and
+    service-account profiles carry every field this module checks; ``token-file``
+    alone was confirmed sufficient against the installed SDK; and an
+    auth-type this module does not recognise is deliberately deferred to the SDK
+    rather than guessed at. This is the asymmetry R-016 named — tests that only
+    assert rejections cannot catch over-rejection.
+    """
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"default: prod\nprofiles:\n  prod:\n{body}", encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.profile_problem is None, f"{name} profile wrongly reported broken"
+    assert snap.has_any is True
+
+
+def test_get_sdk_reports_an_empty_profile_when_no_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The specific problem, not the generic "nothing configured" message."""
+    monkeypatch.delenv("NEBIUS_IAM_TOKEN", raising=False)
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+
+    with pytest.raises(AuthError) as excinfo:
+        get_sdk()
+
+    assert "'prod'" in str(excinfo.value)
+    assert "empty" in str(excinfo.value)
+    reset_sdk()
+
+
+def test_empty_profile_plus_env_token_still_builds_an_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The R-017 interaction: rule 1 outranks any profile problem.
+
+    An empty profile is now a reported problem, and a config file *does* exist
+    here — so this exercises the ``Config``-based path with a token set, not the
+    no-config-file fast path. Flagging the profile must not resurrect the bug
+    where a token-carrying caller is refused.
+    """
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "ne1testtoken")
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("default: prod\nprofiles:\n  prod: {}\n", encoding="utf-8")
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+    reset_sdk()
+
+    assert resolve_credentials(config_path=cfg).profile_problem is not None
+    assert resolve_credentials(config_path=cfg).has_any is True  # the token carries it
+
+    sdk = get_sdk()
+
+    assert sdk is not None
+    reset_sdk()
+
+
 def test_env_token_wins_over_a_broken_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -303,3 +444,120 @@ def test_reset_sdk_also_drops_service_clients(monkeypatch: pytest.MonkeyPatch) -
     reset_sdk()
 
     assert client._clients == {}
+
+
+# (label, profile mapping, should_be_usable). Every "True" row is a shape the
+# installed SDK's `Config.get_credentials` accepts without raising ConfigError —
+# checked against it directly, not inferred. Rejecting any of them is the R-016
+# failure: a working setup reported broken.
+_PROFILE_SHAPES: list[tuple[str, dict[str, str], bool]] = [
+    (
+        "sa_credentials_file_alone",
+        {"auth-type": "service account", "service-account-credentials-file-path": "/x.json"},
+        True,
+    ),
+    (
+        "sa_federated_subject",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "federated-subject-credentials-file-path": "/f.json",
+        },
+        True,
+    ),
+    (
+        "sa_keypair_file",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "public-key-id": "pk1",
+            "private-key-file-path": "/k.pem",
+        },
+        True,
+    ),
+    (
+        "sa_keypair_inline",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "public-key-id": "pk1",
+            "private-key": "KEYDATA",
+        },
+        True,
+    ),
+    (
+        "sa_hyphen_spelling",
+        {"auth-type": "service-account", "service-account-credentials-file-path": "/x.json"},
+        True,
+    ),
+    ("token_file_empty_string", {"token-file": ""}, True),
+    ("federation_with_id", {"auth-type": "federation", "federation-id": "fed1"}, True),
+    ("unknown_auth_type", {"auth-type": "mystery", "service-account-id": "sa1"}, True),
+    ("sa_only_an_id", {"auth-type": "service account", "service-account-id": "sa1"}, False),
+    ("federation_without_id", {"auth-type": "federation", "parent-id": "project-x"}, False),
+    ("parent_id_only", {"parent-id": "project-x"}, False),
+    ("empty", {}, False),
+]
+
+
+@pytest.mark.parametrize(
+    ("profile", "usable"),
+    [(p, u) for _, p, u in _PROFILE_SHAPES],
+    ids=[name for name, _, _ in _PROFILE_SHAPES],
+)
+def test_profile_shapes_match_what_the_sdk_accepts(
+    tmp_path: Path, profile: dict[str, str], usable: bool
+) -> None:
+    """R-023: the check recognised one service-account shape out of three.
+
+    `Config.get_credentials` accepts a whole credentials file on its own, a
+    federated subject, or a keypair whose private key may be inline rather than
+    file-backed. Requiring the file-backed keypair triple hard-blocked two
+    documented setups — the same class as R-016, where a rule that fires on
+    correct input is worse than no rule because the model complies rather than
+    argues.
+    """
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"default": "p", "profiles": {"p": profile}}), encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert (snap.profile_problem is None) is usable, snap.profile_problem
+
+
+def test_a_single_profile_without_a_default_key_is_used(tmp_path: Path) -> None:
+    """`Config._get_profile` auto-selects when there is exactly one profile and
+    no `default:`. Not mirroring that reported a working config as having "no
+    default profile is set", and `get_sdk` then refused to build."""
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        yaml.safe_dump({"profiles": {"only": {"auth-type": "federation", "federation-id": "f"}}}),
+        encoding="utf-8",
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.active_profile == "only"
+    assert snap.profile_problem is None
+    assert snap.has_any is True
+
+
+def test_two_profiles_without_a_default_key_is_still_a_problem(tmp_path: Path) -> None:
+    """The auto-selection is only safe because it is unambiguous. With two
+    profiles the SDK raises, so this must keep reporting it."""
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        yaml.safe_dump({"profiles": {"a": {"token-file": "/t"}, "b": {"token-file": "/t"}}}),
+        encoding="utf-8",
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.has_any is False
+    assert snap.profile_problem is not None

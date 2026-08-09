@@ -90,16 +90,26 @@ def _build_report() -> EnvironmentReport:
     )
 
     next_steps: list[str] = []
-    if snap.profile_problem:
+    if snap.profile_problem and not snap.iam_token_env:
+        # Gated on the token because `get_sdk` prefers NEBIUS_IAM_TOKEN over any
+        # profile problem (R-017). Reporting the profile as a blocker while the
+        # token is working tells someone to fix something that is not broken —
+        # and, in the shape that prompted this, advises setting the variable
+        # they already have set.
         next_steps.append(
             f"Active profile '{snap.active_profile}' cannot authenticate: {snap.profile_problem}"
+        )
+    elif snap.profile_problem:
+        next_steps.append(
+            f"NEBIUS_IAM_TOKEN is in use, so the server is working. Note that the active "
+            f"profile '{snap.active_profile}' could not authenticate on its own: "
+            f"{snap.profile_problem} Once the token expires, calls will start failing."
         )
     if not snap.has_any:
         next_steps.extend(
             [
                 "Set NEBIUS_IAM_TOKEN to a short-lived bearer token, or",
-                f"Create a profile in {snap.config_file_path} "
-                "(`nebius profile create` then `nebius iam login`).",
+                f"Create a profile in {snap.config_file_path} (run `nebius profile create`).",
             ]
         )
     elif snap.config_file_exists and snap.active_profile and not snap.parent_id:

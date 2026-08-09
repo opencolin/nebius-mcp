@@ -53,7 +53,7 @@ It does not trust:
 
 | Threat | Status | Enforcing code | What that actually buys you |
 |---|---|---|---|
-| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:227`, `src/nebius_mcp/sanitize.py:332` | Every tool result carrying Nebius API content is wrapped in an envelope telling the model the content is data, not instructions. (Three tools return an unwrapped value today — `ping`, `check_environment`, `get_manifest` — and none of them touches the Nebius API.) This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
+| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:270`, `src/nebius_mcp/sanitize.py:375` | Every tool result carrying Nebius API content is wrapped in an envelope telling the model the content is data, not instructions. (Three tools return an unwrapped value today — `ping`, `check_environment`, `get_manifest` — and none of them touches the Nebius API.) This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
 | Accidental destruction by the model | Partial | `src/nebius_mcp/confirm.py:122`, `src/nebius_mcp/confirm.py:41` | A delete refuses on the first call and returns a preview plus a single-use token bound to the exact arguments, valid 120 seconds. It stops a single mis-aimed call and puts the target in the transcript before anything happens. It is **not** an injection defense: the token goes to the model, the model replays it, and no human is required — `tests/unit/test_destructive_flow.py:98` mints and consumes one in two back-to-back calls. |
 | Tool poisoning and rug pull | Partial | `src/nebius_mcp/manifest.py:49`, `src/nebius_mcp/tools/ops.py:174` | `get_manifest` returns a SHA-256 over every tool name, description, annotation and input schema, so a changed tool surface is detectable between sessions. Detection only, and only if you record the hash out of band and compare it. A server that is already hostile can return any hash it likes. |
 | Credential blast radius | **Not mitigated** | `src/nebius_mcp/server.py:54`, `src/nebius_mcp/confirm.py:113` | The server acts with the full permissions of whatever token or profile it resolved, and never narrows them. Write mode is one global boolean — see below. |
@@ -68,8 +68,10 @@ switch. There is no per-resource, per-project, per-tool or per-verb scoping —
 it is on for everything or off for everything.
 
 Counted from `src/nebius_mcp/catalog.py:97` against the installed SDK: the
-catalog holds **59 resource types**, of which **46 expose a `delete` RPC**.
-Setting write mode makes all 46 reachable through the single generic
+catalog holds **59 resource types**. **46 expose a `delete` RPC** in the SDK,
+and **44** of those are reachable through the generic tools — the other two take
+parameters the generic shape cannot supply, so `verbs()` withholds them (R-022).
+Setting write mode makes those 44 reachable through the single generic
 `nebius_resource_delete` tool, alongside eleven purpose-built delete tools and
 the eight lifecycle verbs dispatched by `nebius_resource_action`
 (`src/nebius_mcp/tools/generic.py:49`). Regenerate the count with:
