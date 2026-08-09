@@ -931,6 +931,16 @@ _COST_SHAPES: dict[str, str] = {
     "querystring": "https://s.example/o?X-Amz-Expires=900&a=1&b=2 ",
     "slashes_and_ats": "//a@b//c@d://e:f@g ",
     "quoted_names": '"secret_key": "v", ',
+    # The three shapes that matter for the JWT rule, and the omission that let
+    # R-021 sit in this tuple through two reviews: every unit above breaks the
+    # `[A-Za-z0-9_-]` run somewhere, so none of them ever gave that rule a long
+    # unbroken run with many `eyJ` start positions to rescan. The first is the
+    # adversarial form; the second is what base64 of any repeated JSON body
+    # actually looks like, which is the realistic trigger; the third pairs the
+    # prefix with a run made of the class characters themselves.
+    "jwt_prefix_dense": "eyJ",
+    "jwt_b64_json": "eyJhIjoxfXsiYSI6MX0",
+    "jwt_prefix_and_run": "eyJab_cd-",
 }
 
 # 64 KB is the size R-015's attempt 1 was measured at, so the numbers compare

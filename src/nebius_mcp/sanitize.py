@@ -134,12 +134,41 @@ _BENIGN_KEYS: frozenset[str] = frozenset(
 # `redact_text` for error strings — so anything added here is symmetric by
 # construction. That is why R-013's shapes are closed here rather than by
 # widening the in-string assignment rule below, which runs on the error path
-# only. Each pattern is also written to be scan-linear: no unbounded character
-# class sits in front of a literal it has to backtrack to find. R-015 records
-# two reverted attempts that ignored that, at 69.6 s and 11.9 s respectively.
+# only. Each pattern also has to be scan-linear, because `redact` is
+# synchronous and runs inside async tool handlers, so its cost is a hard
+# event-loop block. R-015 records two reverted attempts that ignored that, at
+# 69.6 s and 11.9 s; R-021 records a third that had been in this tuple from the
+# beginning and survived both of those reviews.
+#
+# What actually makes the JWT rule linear, in order of how much it matters —
+# established by mutating each piece out and re-running the cost test, not by
+# reasoning about the regex:
+#
+#   The UPPER BOUNDS are the fix. They cap work per failed candidate, so cost
+#   is O(candidates x bound) rather than O(candidates x string). Removing the
+#   header bound alone fails the cost test; nothing else does. 256 is generous
+#   for a JWT header, which is base64 of a small fixed JSON object and runs
+#   20-60 characters in practice.
+#
+#   `{n,m}+` possessive (Python 3.11+) stops a greedy class unwinding one
+#   character at a time when the `.` it needs is not there. Matches are
+#   unchanged, since the class cannot consume a `.` either way; this is purely
+#   the failure path.
+#
+#   `\b` is a constant-factor improvement, NOT load-bearing — with the bounds
+#   in place the cost test passes without it. It is 8x on a pure `eyJeyJ…` run
+#   and 3x on base64-of-JSON, because it removes interior start positions; it
+#   is slightly negative on a run containing `-` or `_`, since those create
+#   boundaries of their own. Kept for the two cases it helps.
+#
+# The bounds are also a denylist gap, stated rather than hidden: a JWT whose
+# header exceeds 256 characters, or whose payload or signature exceeds 8192,
+# is not redacted by this rule. A 3 KB payload still matches.
+#
+# Measured at 64 KB, worst shape (`"eyJab_cd-"` repeated): 540 ms -> 1.5 ms.
 _SENSITIVE_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{0,}"),
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,256}+\.[A-Za-z0-9_-]{10,8192}+\.[A-Za-z0-9_-]{0,8192}+"),
         "<redacted>",
     ),  # JWT
     (re.compile(r"\bne1[a-z0-9]{30,}\b"), "<redacted>"),  # Nebius-style token prefix (best-effort)
