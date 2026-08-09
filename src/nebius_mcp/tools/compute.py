@@ -110,16 +110,22 @@ def _parse_ssh_public_key(text: str) -> tuple[str, bytes] | None:
 def _validate_ssh_public_key(public_key: str) -> str:
     """Return the normalised key line, or raise ``ToolError`` explaining the refusal.
 
-    ``compute_create_instance`` interpolates this value into a cloud-config
-    document that cloud-init parses as root, on the line under
-    ``ssh_authorized_keys:``. A line break in the value therefore ends that
-    list item and continues the YAML at whatever indentation follows, which is
-    enough to add a second authorized key or a top-level ``runcmd:``. So the
-    refusal is deliberately wider than "no ``\\n``": the whole line must be
-    printable ASCII (0x20-0x7E). ``\\n`` is not the only codepoint something
+    The value becomes one entry of ``ssh_authorized_keys`` in the cloud-config
+    that ``compute_create_instance`` hands to cloud-init, which installs each
+    entry as a line of the guest's ``authorized_keys``. Since that document is
+    now emitted by a YAML serializer (:func:`_cloud_init_document`), a line
+    break in the value can no longer end the list item and continue the YAML at
+    whatever indentation follows — the serializer quotes it instead. The
+    refusal stands anyway, because ``authorized_keys`` is itself line-based: an
+    entry carrying a line break installs the two halves as two separate
+    entries, and neither the fingerprint in the preview nor the description of
+    the call would mention the second one.
+
+    So the rule stays deliberately wider than "no ``\\n``": the whole line must
+    be printable ASCII (0x20-0x7E). ``\\n`` is not the only codepoint something
     downstream may treat as a line break — Python's own ``str.splitlines``
     also breaks on ``\\r``, ``\\x0b``, ``\\x0c``, ``\\x85``, ``\\u2028`` and
-    ``\\u2029`` — and this code cannot know which set the guest's YAML parser
+    ``\\u2029`` — and this code cannot know which set the guest's tooling
     honours, so it refuses everything outside printable ASCII rather than try
     to enumerate.
 
@@ -145,11 +151,11 @@ def _validate_ssh_public_key(public_key: str) -> str:
     if bad is not None:
         raise ToolError(
             f"Invalid ssh_public_key: contains {bad!r} (U+{ord(bad):04X}), which is not "
-            "printable ASCII. An SSH public key is a single line; a line break or "
-            "control character here would inject extra cloud-config into the "
-            "instance's user-data, so it is refused rather than escaped. Pass exactly "
-            "one key line, '<type> <base64-blob> [comment]', dropping any non-ASCII "
-            "comment."
+            "printable ASCII. An SSH public key is a single line, and cloud-init "
+            "installs each authorized key as one line of the guest's authorized_keys, "
+            "so a line break or control character here would install something other "
+            "than the single key this call previews. Pass exactly one key line, "
+            "'<type> <base64-blob> [comment]', dropping any non-ASCII comment."
         )
     if _parse_ssh_public_key(text) is None:
         raise ToolError(
@@ -160,6 +166,80 @@ def _validate_ssh_public_key(public_key: str) -> str:
             "derive the public half with `ssh-keygen -y -f <private-key>`."
         )
     return text
+
+
+def _cloud_init_document(ssh_key: str) -> str:
+    """Render the cloud-config user-data that authorizes ``ssh_key`` for user 'nebius'.
+
+    The document is serialized by PyYAML rather than assembled with an
+    f-string. Interpolation put the key into the block sequence as a bare
+    scalar, which silently changed what the document *meant* for keys that are
+    perfectly legal in ``authorized_keys``: a comment containing ``": "`` made
+    the list item parse as a mapping rather than a string, so cloud-init
+    installed no key, the VM booted unreachable, and the dry run had shown a
+    normal fingerprint. ``": "`` was not the only such sequence: a ``#`` after
+    a space starts a YAML comment, so ``key alice #1`` installed a truncated
+    key just as quietly. The rest of YAML's indicators (``&``, ``*``, ``!``,
+    ``%``, ``[``, ``{``, ``,``, quotes) happen to be inert here only because a
+    key line always begins with its type — a property nothing enforces and
+    nothing should depend on. Letting the serializer choose the quoting settles
+    all of it from the value. Nothing is rejected that was accepted before; a
+    colon in a comment is legal in ``authorized_keys`` and stays legal here.
+
+    Two details of the call are load-bearing:
+
+    * cloud-init requires ``#cloud-config`` as the literal first line. It is a
+      comment, so it is not part of the data and no dumper will emit it; it is
+      prepended here.
+    * ``width`` is raised past any real key to disable line folding. A folded
+      plain scalar does still round-trip, but it would split a key across lines
+      in the user-data and in any support transcript quoting it, for no gain.
+
+    ``sort_keys=False`` plus the indented block-sequence style keep the emitted
+    bytes identical to the hand-written template this replaced whenever the key
+    needs no quoting, so an ordinary VM gets exactly the user-data it got
+    before; ``test_cloud_init_layout_is_byte_identical_for_a_plain_key`` pins
+    that against the old literal.
+
+    PyYAML is imported here rather than at module import time. It is *not* a
+    declared dependency of this project — it arrives transitively (nebius,
+    fastmcp, and others) — so if it ever goes missing the failure should be
+    this one tool raising at call time, the way ``auth.py`` already fails for
+    profile loading, rather than the whole server failing to import.
+    """
+    import yaml  # type: ignore[import-untyped]  # bundled via pyyaml (transitive of nebius)
+
+    class _IndentedDumper(yaml.SafeDumper):  # type: ignore[misc]
+        """SafeDumper that indents block sequences under their parent key.
+
+        PyYAML's default writes ``- item`` at the same column as the key it
+        belongs to. Both forms parse to the same data, so this is cosmetic —
+        but the indented one is what this module emitted before, and keeping it
+        means an ordinary VM's user-data is unchanged down to the byte.
+        """
+
+        def increase_indent(self, flow: bool = False, indentless: bool = False) -> Any:
+            return super().increase_indent(flow, False)
+
+    document = {
+        "users": [
+            {
+                "name": "nebius",
+                "sudo": "ALL=(ALL) NOPASSWD:ALL",
+                "shell": "/bin/bash",
+                "ssh_authorized_keys": [ssh_key],
+            }
+        ]
+    }
+    body: str = yaml.dump(
+        document,
+        Dumper=_IndentedDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=False,
+        width=1_000_000,
+    )
+    return "#cloud-config\n" + body
 
 
 def _ssh_key_summary(public_key: str) -> dict[str, str]:
@@ -634,9 +714,9 @@ def register(app: FastMCP) -> None:
         size_bytes = gib_to_bytes(boot_disk_size_gib)
         validate_boot_disk_size(size_bytes, image_family=image_family)
         # Normalised (and refused) here, before any token exists and before the
-        # SDK client is built: an embedded newline in this value ends the
-        # ssh_authorized_keys list item below and appends arbitrary top-level
-        # cloud-config, so it must not reach a preview that would make it look
+        # SDK client is built: a value that is not one printable-ASCII key line
+        # authorizes something other than the single key the preview
+        # fingerprints, so it must not reach a preview that would make it look
         # approved. Stripping once, here, also means the token, the preview and
         # cloud-init all agree on the exact key — binding the raw parameter
         # would let padding whitespace invalidate a freshly issued token even
@@ -650,15 +730,7 @@ def register(app: FastMCP) -> None:
                 "parent-id is set in the active profile."
             )
 
-        cloud_init = (
-            "#cloud-config\n"
-            "users:\n"
-            "  - name: nebius\n"
-            "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
-            "    shell: /bin/bash\n"
-            "    ssh_authorized_keys:\n"
-            f"      - {ssh_key}\n"
-        )
+        cloud_init = _cloud_init_document(ssh_key)
 
         # Every field that changes the resulting VM belongs here: the hash of
         # this dict is the whole of what the confirm token attests to, so an
