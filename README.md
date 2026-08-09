@@ -8,17 +8,65 @@ object storage, VPC, IAM, secrets, and every other resource type in the Nebius
 Python SDK.
 
 It is **read-only until you opt in**, and destructive operations need a second
-confirming call. You can point an agent at your cloud account without it being
-able to delete anything by accident.
+confirming call — so you can point an agent at your cloud account without it
+being able to delete anything by accident. What that does and does not protect
+you from is written down in [Safety model](#safety-model).
 
-> **Status: v0.1.0 alpha.** Not yet on PyPI — install from git, as shown below.
+This is infrastructure, not inference: it manages the resources in your Nebius
+account. Nebius Token Factory — inference, fine-tuning, Data Lab, Sandboxes —
+is a separate API and is [not covered](#not-covered).
 
-**Jump to:** [Quick start](#quick-start) ·
-[Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) ·
-[Codex CLI](#codex-cli) · [Cursor](#cursor) · [VS Code](#vs-code) ·
-[Troubleshooting](#troubleshooting)
+> **Status: alpha, and not yet on PyPI** — install from git, as shown below.
+> Tool names and arguments may still change. See the
+> [changelog](https://github.com/opencolin/nebius-mcp/blob/main/CHANGELOG.md),
+> the [threat model](https://github.com/opencolin/nebius-mcp/blob/main/SECURITY.md),
+> and the [roadmap](https://github.com/opencolin/nebius-mcp/blob/main/docs/ROADMAP.md).
+> Not affiliated with Nebius B.V.
 
----
+**Jump to:** [What you can ask for](#what-you-can-ask-for) ·
+[Quick start](#quick-start) · [Safety model](#safety-model) ·
+[Tool surface](#tool-surface) · [Troubleshooting](#troubleshooting)
+
+**Set up:** [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) ·
+[Codex CLI](#codex-cli) · [Cursor](#cursor) · [VS Code](#vs-code)
+
+## What you can ask for
+
+Read-only out of the box:
+
+> What GPU platforms are available in my tenant?
+
+> Show me every running instance, and which GPU platform each one is on.
+
+> Which of my storage buckets have no lifecycle policy?
+
+> My mk8s cluster is unhealthy — show me the cluster and its node groups.
+
+> What Nebius resource types can you see? I'm looking for something DNS-related.
+
+After enabling [write mode](#write-mode):
+
+> Stop the instance named `training-box`.
+
+> Create a 4×H100 VM on the `default` subnet with my SSH key.
+
+<a id="why-this-exists"></a>
+
+## Why not the Nebius CLI or SDK?
+
+Nebius ships both. Neither suits an agent on its own:
+
+- The CLI is assembled as shell strings, which is both error-prone and a
+  command-injection surface when a model builds the arguments.
+- The SDK exposes 80+ service clients with no opinion about what an agent
+  should be allowed to do, no guard rails on irreversible operations, and no
+  checks against the well-known
+  [skill](https://github.com/opencolin/nebius-skill) gotchas.
+
+`nebius-mcp` adds the [safety model](#safety-model) below, plus validation drawn
+from real failures — 50 GiB minimum boot disks for CUDA images, and
+`network_ssd` with underscores rather than the `network-ssd` Nebius rejects —
+each failing fast with an explanation instead of an opaque gRPC error.
 
 ## Quick start
 
@@ -62,8 +110,14 @@ ones doing it.
 
 ### 4. Add it to your client
 
-Pick yours: [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) ·
-[Codex CLI](#codex-cli) · [Cursor](#cursor) · [VS Code](#vs-code)
+For Claude Code, one command:
+
+```bash
+claude mcp add nebius -- uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
+```
+
+Anything else — [Claude Desktop](#claude-desktop), [Codex CLI](#codex-cli),
+[Cursor](#cursor), [VS Code](#vs-code) — see [Client setup](#client-setup).
 
 ### 5. Check it works
 
@@ -77,36 +131,28 @@ what to fix. Then try:
 
 > List my Nebius compute instances.
 
----
-
 ## Client setup
 
-Every client below runs the same command. Only the file format differs.
-
-| | Command | Args |
-|---|---|---|
-| | `uvx` | `--from`, `git+https://github.com/opencolin/nebius-mcp`, `nebius-mcp` |
-
-Once the package is on PyPI this collapses to `uvx nebius-mcp`.
-
-### Claude Code
-
-One command:
+`nebius-mcp` itself takes no arguments and needs no environment variables, so
+every client runs the same command:
 
 ```bash
-claude mcp add nebius -e NEBIUS_PROFILE=default -- uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
+uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
 ```
 
-The `--` is required — it separates Claude's own flags from the server command.
+What differs between clients is the file format, the top-level key, and — for
+Codex only — a startup timeout.
 
-Add `--scope user` to enable it in every project, or `--scope project` to write
-a `.mcp.json` you can commit for your team.
+| Client | Where the config lives | Top-level key |
+|---|---|---|
+| [Claude Code](#claude-code) | managed by `claude mcp add`; or `.mcp.json` in the project root | `mcpServers` |
+| [Claude Desktop](#claude-desktop) | `~/Library/Application Support/Claude/claude_desktop_config.json`, or `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
+| [Codex CLI](#codex-cli) | `~/.codex/config.toml` — **TOML** | `mcp_servers` |
+| [Cursor](#cursor) | `~/.cursor/mcp.json`, or `.cursor/mcp.json` for one project | `mcpServers` |
+| [VS Code](#vs-code) | `.vscode/mcp.json` | **`servers`** |
 
-Verify with `claude mcp list` (look for `✔ Connected`), or `/mcp` inside a
-session.
-
-<details>
-<summary>Equivalent <code>.mcp.json</code></summary>
+This entry is identical for every JSON client — only the key it sits under
+changes. If you already have other servers configured, add it alongside them:
 
 ```json
 {
@@ -114,56 +160,70 @@ session.
     "nebius": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"],
-      "env": {
-        "NEBIUS_PROFILE": "${NEBIUS_PROFILE:-default}"
-      }
+      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"]
     }
   }
 }
 ```
 
-Claude Code expands `${VAR}` and `${VAR:-default}` in `command`, `args`, and
-`env` — so you can commit this file and keep secrets in your shell. A
-project-scoped server needs interactive approval the first time.
+Two things bite people regardless of client:
 
-</details>
+- **GUI-launched clients do not inherit your shell.** Claude Desktop, Cursor and
+  VS Code start from the desktop, so neither your `PATH` nor your exported
+  variables reach the server. If it will not start, replace `"uvx"` with the
+  absolute path from `which uvx` (usually `~/.local/bin/uvx`, written out in
+  full). For the same reason, set variables in an `env` block rather than with
+  `export`.
+- **The first start builds the package**, so run
+  [step 3](#3-check-it-before-wiring-it-up) before wiring anything up.
+
+> Once this is on PyPI, every `--from git+https://...` on this page collapses
+> to plain `uvx nebius-mcp`.
+
+### Claude Code
+
+```bash
+claude mcp add nebius -- uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
+```
+
+The `--` is required — it separates Claude's own flags from the server command.
+Verify with `claude mcp list` (look for `✔ Connected`), or `/mcp` in a session.
+
+`--scope user` enables it in every project; `--scope project` writes a
+`.mcp.json` you can commit for your team. Claude Code expands `${VAR}` and
+`${VAR:-default}` in `command`, `args` and `env`, so a committed file can keep
+settings in your shell:
+
+```json
+"env": { "NEBIUS_MCP_MODE": "${NEBIUS_MCP_MODE:-read}" }
+```
+
+A project-scoped server needs interactive approval the first time.
 
 ### Claude Desktop
 
-Open **Claude menu → Settings… → Developer → Edit Config**, or edit directly:
-
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "nebius": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"],
-      "env": {
-        "NEBIUS_PROFILE": "default"
-      }
-    }
-  }
-}
-```
+Open **Claude menu → Settings… → Developer → Edit Config**, or edit the file
+directly at the path in the table above, and paste in
+[the entry above](#client-setup) unchanged.
 
 **Quit Claude Desktop completely and reopen it** — closing the window is not
 enough. Then find the server under the **+** button → **Connectors**.
 
-Claude Desktop does not necessarily inherit your shell's `PATH`. If the server
-does not start, replace `"uvx"` with the absolute path from `which uvx` (usually
-`~/.local/bin/uvx`, written out in full).
-
 ### Codex CLI
 
+`startup_timeout_sec` defaults to **10 seconds**, which a cold `uvx` run will
+usually exceed. Raise it as shown below, or run
+[step 3](#3-check-it-before-wiring-it-up) first. Verify with `codex mcp list`,
+or `/mcp` in the TUI.
+
 ```bash
-codex mcp add nebius --env NEBIUS_PROFILE=default -- uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
+codex mcp add nebius -- uvx --from git+https://github.com/opencolin/nebius-mcp nebius-mcp
 ```
 
-Or edit `~/.codex/config.toml` — note this is TOML, and the table is
+<details>
+<summary>Hand-editing <code>~/.codex/config.toml</code></summary>
+
+This is the one client whose format genuinely differs — TOML, and the table is
 `mcp_servers` with an underscore:
 
 ```toml
@@ -173,51 +233,33 @@ args = ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"]
 startup_timeout_sec = 60
 
 [mcp_servers.nebius.env]
-NEBIUS_PROFILE = "default"
+NEBIUS_MCP_MODE = "read"
 ```
 
-`startup_timeout_sec` defaults to **10 seconds**, which a cold `uvx` run will
-usually exceed. Raise it as shown, or run step 3 of the quick start first.
-
-To pass a token from your shell without writing it into the file, allowlist it
-instead of setting it:
+Note that `env` is a nested table, not an inline key. To pass a token from your
+shell without writing it into the file, allowlist it instead of setting it:
 
 ```toml
 env_vars = ["NEBIUS_IAM_TOKEN"]
 ```
 
-Verify with `codex mcp list`, or `/mcp` in the Codex TUI.
+</details>
 
 ### Cursor
 
-Create `~/.cursor/mcp.json` for every project, or `.cursor/mcp.json` for just
-this one:
+**Restart Cursor, then enable the server under Customize in the sidebar** — it
+does not start until you do. Logs:
+<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> → **MCP Logs**.
 
-```json
-{
-  "mcpServers": {
-    "nebius": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"],
-      "env": {
-        "NEBIUS_PROFILE": "default"
-      }
-    }
-  }
-}
-```
-
-Restart Cursor, then enable the server under **Customize** in the sidebar.
-Logs: <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> → **MCP Logs**.
-
-Cursor expands `${env:NAME}`, so `"NEBIUS_IAM_TOKEN": "${env:NEBIUS_IAM_TOKEN}"`
-keeps the token out of the file.
+Paste in [the entry above](#client-setup) unchanged. Cursor expands `${env:NAME}`, so
+`"NEBIUS_IAM_TOKEN": "${env:NEBIUS_IAM_TOKEN}"` in an `env` block keeps the token
+out of the file.
 
 ### VS Code
 
-Create `.vscode/mcp.json`. **VS Code uses `servers`, not `mcpServers`** — this
-is the single most common mistake when copying config between clients:
+**VS Code uses `servers`, not `mcpServers`** — this is the single most common
+mistake when copying config between clients, so here it is spelled out rather
+than left as an edit for you to make:
 
 ```json
 {
@@ -225,27 +267,24 @@ is the single most common mistake when copying config between clients:
     "nebius": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"],
-      "env": {
-        "NEBIUS_PROFILE": "default"
-      }
+      "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"]
     }
   }
 }
-```
-
-Or from the command line:
-
-```bash
-code --add-mcp '{"name":"nebius","command":"uvx","args":["--from","git+https://github.com/opencolin/nebius-mcp","nebius-mcp"],"env":{"NEBIUS_PROFILE":"default"}}'
 ```
 
 VS Code asks you to trust the server the first time it starts. Manage it with
 **MCP: List Servers** in the Command Palette; **Show Output** there is where
 errors appear.
 
-VS Code is the only client with a built-in secret prompt. To be asked for a
-token rather than storing one:
+<details>
+<summary>The CLI one-liner, and being prompted for a token instead of storing one</summary>
+
+```bash
+code --add-mcp '{"name":"nebius","command":"uvx","args":["--from","git+https://github.com/opencolin/nebius-mcp","nebius-mcp"]}'
+```
+
+VS Code is the only client with a built-in secret prompt:
 
 ```json
 {
@@ -268,29 +307,7 @@ token rather than storing one:
 }
 ```
 
----
-
-## What you can ask for
-
-Read-only out of the box:
-
-> What GPU platforms are available in my tenant?
-
-> Show me every running instance and what it costs me to keep it up.
-
-> Which of my storage buckets have no lifecycle policy?
-
-> My mk8s cluster is unhealthy — show me the cluster and its node groups.
-
-> What Nebius resource types can you see? I'm looking for something DNS-related.
-
-After enabling [write mode](#write-mode):
-
-> Stop the instance named `training-box`.
-
-> Create a 4×H100 VM on the `default` subnet with my SSH key.
-
----
+</details>
 
 ## Safety model
 
@@ -326,7 +343,7 @@ sessions to detect tool poisoning.
 mode, and outcome. Never raw arguments, tokens, or secret values.
 
 **What it does not defend against is written down too.**
-[SECURITY.md](SECURITY.md) carries the threat model: one row per threat, each
+[SECURITY.md](https://github.com/opencolin/nebius-mcp/blob/main/SECURITY.md) carries the threat model: one row per threat, each
 marked mitigated, partial, or not mitigated, with the enforcing code named.
 Read it before pointing this at an account that matters. It is also where to
 report a vulnerability.
@@ -337,18 +354,31 @@ report a vulnerability.
 export NEBIUS_MCP_MODE=write
 ```
 
-Or add `"NEBIUS_MCP_MODE": "write"` to the `env` block in your client config.
-Consider keeping a read-only server for daily use and a separate write-enabled
-entry you add when you need it.
+That works for a terminal-launched client. GUI clients do not inherit your
+shell, so add it to the `env` block instead — and consider keeping two entries,
+a read-only one for daily use and a write-enabled one you point at deliberately:
 
----
+```json
+"nebius-write": {
+  "type": "stdio",
+  "command": "uvx",
+  "args": ["--from", "git+https://github.com/opencolin/nebius-mcp", "nebius-mcp"],
+  "env": { "NEBIUS_MCP_MODE": "write" }
+}
+```
+
+Give that entry a credential scoped to the project you intend to change. Write
+mode is one global boolean with no per-resource scoping — [SECURITY.md](https://github.com/opencolin/nebius-mcp/blob/main/SECURITY.md)
+says what that means.
 
 ## Authentication
 
 Credentials resolve in this order:
 
 1. **`NEBIUS_IAM_TOKEN`** — a bearer token. Best for CI. Expires after 12 hours.
-2. **`NEBIUS_PROFILE`** — a named profile in `~/.nebius/config.yaml`.
+2. **`NEBIUS_PROFILE`** — a named profile in `~/.nebius/config.yaml`. Set this
+   only if you want a profile other than the file's own default; setting it to a
+   name that does not exist is a common way to break a working setup.
 3. **The default profile** in `~/.nebius/config.yaml`, set by `nebius iam login`.
 
 Run `check_environment` to see which one resolved. It reports the problem
@@ -359,12 +389,13 @@ precisely if a profile exists but cannot authenticate.
 | Variable | Default | Purpose |
 |---|---|---|
 | `NEBIUS_IAM_TOKEN` | — | Bearer token; highest precedence |
-| `NEBIUS_PROFILE` | — | Profile name in `~/.nebius/config.yaml` |
+| `NEBIUS_PROFILE` | — | Profile name in `~/.nebius/config.yaml`; omit to use the file's default |
 | `NEBIUS_MCP_MODE` | `read` | Set to `write` to allow mutations |
 | `NEBIUS_MCP_ALLOW_SECRET_REVEAL` | unset | Set to `1` to let `secrets_reveal_payload` return plaintext secrets. Write mode and the confirm token are still required |
 | `NEBIUS_MCP_LOG_LEVEL` | `INFO` | Audit log level on stderr |
 
----
+Which project a tool acts on comes from the active profile's `parent-id` unless
+you pass `parent_id` explicitly. `check_environment` reports the one in effect.
 
 ## Tool surface
 
@@ -382,11 +413,18 @@ hash.
 | **AI Endpoints** | `ai_list_endpoints`, `ai_get_endpoint`, `ai_get_endpoint_by_name` | `ai_start_endpoint`, `ai_stop_endpoint` | `ai_delete_endpoint` |
 | **VPC** | `vpc_list_networks`, `vpc_get_network`, `vpc_list_subnets`, `vpc_get_subnet`, `vpc_list_security_groups`, `vpc_get_security_group`, `vpc_list_allocations`, `vpc_get_allocation` | — | `vpc_delete_network`, `vpc_delete_subnet`, `vpc_delete_security_group`, `vpc_delete_allocation` |
 | **Registry** | `registry_list`, `registry_get`, `registry_list_images`, `registry_get_image` | — | `registry_delete`, `registry_delete_image` |
-| **Secrets** | `secrets_list`, `secrets_get`, `secrets_list_versions` | — | `secrets_reveal_payload` |
+| **Secrets** | `secrets_list`, `secrets_get`, `secrets_list_versions` | — | `secrets_reveal_payload` † |
 
-The columns are the tools' MCP annotations, not their effect on your account.
-`secrets_reveal_payload` destroys nothing; it sits in the last column because it
-must be gated like a delete. See [Safety model](#safety-model).
+The columns group tools by how they are gated, which is close to but not exactly
+their MCP annotations: `compute_create_instance` sits under Destructive because it
+takes the same two-step confirm, though it is annotated `destructiveHint: false`.
+† `secrets_reveal_payload` destroys nothing. It carries a delete's annotations
+because `readOnlyHint` and `destructiveHint` are the fields clients consult when
+deciding what to auto-approve — a hint, not a guarantee. See
+[Safety model](#safety-model).
+
+**Not listed here?** Every other resource type the SDK exposes is reachable
+through the six generic tools below.
 
 ### Generic tools (6) — everything else
 
@@ -404,6 +442,10 @@ action.
 | `nebius_resource_get_by_name` | Get one by name within a parent |
 | `nebius_resource_delete` | Delete. Write mode plus two-step confirm |
 | `nebius_resource_action` | `start`, `stop`, `restart`, `resume`, `activate`, `deactivate`, `undelete`, `cancel` |
+
+In practice that means asking for a bucket looks like
+`nebius_resource_list` with `resource_type: "storage.bucket"`. Call
+`nebius_list_resource_types` first if you do not know the key.
 
 This is what makes object storage, DNS, KMS, quotas, capacity blocks, audit
 events, managed PostgreSQL and MLflow, application tunnels, Kubernetes
@@ -424,11 +466,9 @@ plaintext credentials behind the single tool annotated for it.
 
 - **Nebius Token Factory** — inference, fine-tuning, Data Lab, dedicated
   endpoints, Sandboxes. A separate REST API with API-key auth. See
-  [the roadmap](docs/ROADMAP.md).
+  [the roadmap](https://github.com/opencolin/nebius-mcp/blob/main/docs/ROADMAP.md).
 - `ai endpoint update` and log tailing — no SDK RPC exists.
 - `mk8s cluster get-credentials` (kubeconfig) — CLI only, no SDK RPC.
-
----
 
 ## Troubleshooting
 
@@ -491,6 +531,22 @@ Tokens last 12 hours.
 </details>
 
 <details>
+<summary>"profile '...' is not defined in the config file"</summary>
+
+`NEBIUS_PROFILE` is set to a name that does not exist in `~/.nebius/config.yaml`,
+and it overrides the file's own default. Unset it, or set it to a name that is
+actually in the file:
+
+```bash
+unset NEBIUS_PROFILE
+```
+
+If your client sets it in an `env` block, remove it there. You only need it when
+you want a profile other than the default.
+
+</details>
+
+<details>
 <summary>A tool returns an empty list</summary>
 
 Usually the wrong `parent_id`. Many resources are not parented by a project —
@@ -523,7 +579,10 @@ beyond write mode: add `"NEBIUS_MCP_ALLOW_SECRET_REVEAL": "1"` to your client's
 The server writes JSON audit lines to stderr. Your client captures them:
 
 - **Claude Code**: `claude mcp list`, or `/mcp` in session
-- **Claude Desktop**: `~/Library/Logs/Claude/mcp-server-nebius.log`
+- **Claude Desktop**: `~/Library/Logs/Claude/mcp-server-nebius.log` on macOS,
+  `%APPDATA%\Claude\logs\mcp-server-nebius.log` on Windows. `mcp.log` in the
+  same directory carries the client side of the connection. Follow it with
+  `tail -F ~/Library/Logs/Claude/mcp-server-nebius.log`
 - **Cursor**: <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> → MCP Logs
 - **VS Code**: **MCP: List Servers** → your server → **Show Output**
 - **Codex**: `codex mcp list`
@@ -532,26 +591,6 @@ Raise detail with `NEBIUS_MCP_LOG_LEVEL=DEBUG`.
 
 </details>
 
----
-
-## Why this exists
-
-Nebius ships a CLI and a Python SDK. Neither suits an agent on its own:
-
-- The CLI is assembled as shell strings, which is both error-prone and a
-  command-injection surface when a model builds the arguments.
-- The SDK exposes 80+ service clients with no opinion about what an agent
-  should be allowed to do, no guard rails on irreversible operations, and no
-  checks against the well-known
-  [skill](https://github.com/opencolin/nebius-skill) gotchas.
-
-`nebius-mcp` adds the safety model above, plus validation drawn from real
-failures — 50 GiB minimum boot disks for CUDA images, and `network_ssd` with
-underscores rather than the `network-ssd` Nebius rejects — each failing fast
-with an explanation instead of an opaque gRPC error.
-
----
-
 ## Development
 
 ```bash
@@ -559,14 +598,14 @@ git clone https://github.com/opencolin/nebius-mcp
 cd nebius-mcp
 uv sync
 
-uv run pytest                 # 90 unit tests, no Nebius traffic
+uv run pytest                 # unit tests, no Nebius traffic
 uv run ruff check .           # lint
 uv run ruff format --check .  # formatting
 uv run mypy src               # strict type check
 ./scripts/security_audit.sh   # snyk-agent-scan over the tool surface
 ```
 
-Run the server straight from a checkout:
+Requires Python 3.11+. Run the server straight from a checkout:
 
 ```bash
 uv run nebius-mcp
@@ -578,13 +617,13 @@ Pre-commit hooks (ruff, mypy, gitleaks) are in `.pre-commit-config.yaml`:
 uv tool install pre-commit && pre-commit install
 ```
 
-Planning docs live in [docs/](docs/): the [roadmap](docs/ROADMAP.md),
-[per-release plans](docs/plans/), and a [findings log](docs/REVIEW-FINDINGS.md)
+Planning docs live in [docs/](https://github.com/opencolin/nebius-mcp/blob/main/docs/): the [roadmap](https://github.com/opencolin/nebius-mcp/blob/main/docs/ROADMAP.md),
+[per-release plans](https://github.com/opencolin/nebius-mcp/blob/main/docs/plans/), and a [findings log](https://github.com/opencolin/nebius-mcp/blob/main/docs/REVIEW-FINDINGS.md)
 recording defects and how each was caught.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](https://github.com/opencolin/nebius-mcp/blob/main/LICENSE).
 
 The [nebius-skill](https://github.com/opencolin/nebius-skill) repo informed the
-operation coverage list and the validation rules. Not affiliated with Nebius B.V.
+operation coverage list and the validation rules.
