@@ -9,6 +9,7 @@ asking anyone a question.
 | [v0.2.0.md](v0.2.0.md) | Ship what exists, truthfully | 9 |
 | [v0.3.0.md](v0.3.0.md) | It can build things, and you can bound what it builds | 9 |
 | [v0.4.0.md](v0.4.0.md) | The second plane, and proof that any of it works | 11 |
+| [v0.4.0-tokenfactory.md](v0.4.0-tokenfactory.md) | Refines T3-T6 against the actual Token Factory API | 7 |
 | [v1.0.0.md](v1.0.0.md) | Recommend it to strangers | 14 |
 | [v2.0.0.md](v2.0.0.md) | Shared infrastructure, and coverage that maintains itself | 14 |
 
@@ -93,6 +94,13 @@ this project has verified — Token Factory endpoint paths, whether Data Lab has
 a public REST surface, whether `validate_id`'s inferred patterns match the real
 API. Those tasks begin with a discovery step and treat a documented negative
 result as a valid outcome. Do not guess and ship.
+
+The Token Factory discovery step has run — see
+[v0.4.0-tokenfactory.md](v0.4.0-tokenfactory.md). Both unknowns above are
+settled: the endpoint paths come from a public unauthenticated OpenAPI document
+rather than needing a live tenant, and Data Lab does have a REST surface. That
+document also lists what remains unverified, which is now mostly about units,
+entitlement and expiry rather than about shape.
 
 ## Repository layout an agent will need
 
