@@ -199,3 +199,107 @@ def test_get_sdk_reports_broken_profile_when_no_token(
         get_sdk()
     assert "federation-id" in str(excinfo.value)
     reset_sdk()
+
+
+def test_get_sdk_works_with_token_and_no_config_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """R-017: precedence rule 1, which is the documented Docker and CI path.
+
+    ``Config.__init__`` raises ``FileNotFoundError`` when the config file is
+    absent, before any env bearer is consulted — so routing a token-only setup
+    through it failed with advice to set the variable the caller had already
+    set. A bare ``SDK()`` resolves ``EnvBearer`` instead.
+
+    The existing coverage asserted the token beats a *broken profile*, which
+    needs a file to exist in order to be broken. Token plus no file at all was
+    the untested case, and it is the one that shipped.
+    """
+    from nebius_mcp.auth import reset_sdk
+
+    reset_sdk()
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "ne1testtoken")
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", tmp_path / "absent" / "config.yaml")
+
+    sdk = get_sdk()
+
+    assert sdk is not None
+    assert get_sdk() is sdk  # still a singleton
+    reset_sdk()
+
+
+def test_the_token_only_path_does_not_construct_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The fast path is pinned separately from the exception fallback.
+
+    ``get_sdk`` handles a token-only environment twice over: it skips ``Config``
+    entirely when no config file exists, and falls back to a bare SDK if
+    ``Config`` raises anyway. That redundancy is deliberate, and it means
+    removing either branch alone leaves the suite green — mutation testing
+    showed exactly that. This asserts the first branch by proving ``Config`` is
+    never constructed, so the fast path cannot be quietly deleted.
+    """
+    from nebius_mcp.auth import reset_sdk
+
+    reset_sdk()
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "ne1testtoken")
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", tmp_path / "absent" / "config.yaml")
+
+    import nebius.aio.cli_config as cli_config
+
+    calls: list[object] = []
+    original = cli_config.Config
+
+    def spy(*args: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli_config, "Config", spy)
+
+    assert get_sdk() is not None
+    assert calls == [], "token-only path should not construct Config at all"
+    reset_sdk()
+
+
+def test_get_sdk_prefers_the_token_over_an_unreadable_config_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A file that exists but cannot be read must not veto rule 1.
+
+    Rule 1 outranks rules 2 and 3, so a malformed config is not a reason to
+    refuse a caller who supplied a token.
+    """
+    from nebius_mcp.auth import reset_sdk
+
+    reset_sdk()
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("this: is: not: valid: yaml: at: all\n", encoding="utf-8")
+    monkeypatch.setenv("NEBIUS_IAM_TOKEN", "ne1testtoken")
+    monkeypatch.delenv("NEBIUS_PROFILE", raising=False)
+    monkeypatch.setattr("nebius_mcp.auth.DEFAULT_CONFIG_PATH", cfg)
+
+    assert get_sdk() is not None
+    reset_sdk()
+
+
+def test_reset_sdk_also_drops_service_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R-018: the two caches must not be able to drift apart.
+
+    ``client._clients`` memoises stubs built against whatever ``get_sdk()``
+    returned. Dropping the SDK alone left the next ``service()`` call handing
+    back a stub bound to the discarded channel. Latent under stdio, live the
+    moment anything re-resolves credentials — a token refresh after the
+    documented 12-hour expiry being the obvious case.
+    """
+    from nebius_mcp import client
+    from nebius_mcp.auth import reset_sdk
+
+    client._clients[str] = object()
+    assert client._clients
+
+    reset_sdk()
+
+    assert client._clients == {}

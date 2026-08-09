@@ -283,3 +283,95 @@ def test_individually_required_exact_keys_match() -> None:
     """
     for key in ("client_certificate_data", "ssh_authorized_keys", "client_key_data", "kubeconfig"):
         assert redact({key: "MATERIAL"})[key] == "<redacted>", key
+
+
+# (field name, value that must survive). Every one contains a substring from
+# _SENSITIVE_SUBSTRINGS and holds no secret. Redacting these does not read as a
+# withheld value — it reads as data the account does not have, and the model
+# acts on that.
+_BENIGN_FIELDS: tuple[tuple[str, object], ...] = (
+    ("tokens_used", 4096),
+    ("tokens_remaining", 12000),
+    ("token_count", 7),
+    ("total_tokens", 8192),
+    ("prompt_tokens", 512),
+    ("completion_tokens", 128),
+    ("max_tokens", 2048),
+    ("credentials_expire_at", "2026-08-10T00:00:00Z"),
+    ("token_expires_at", "2026-08-10T12:00:00Z"),
+    ("secret_version_count", 3),
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _BENIGN_FIELDS, ids=[f for f, _ in _BENIGN_FIELDS])
+def test_benign_neighbours_of_the_substring_rule_survive(field: str, value: object) -> None:
+    assert redact({field: value})[field] == value
+
+
+@pytest.mark.parametrize("field", ["tokensUsed", "tokens-used", "TOKENS_USED"])
+def test_the_benign_list_is_matched_after_normalization(field: str) -> None:
+    """camelCase and kebab-case reach the sanitizer too, so the exemption has to
+    survive the same folding the denylist does."""
+    assert redact({field: 4096})[field] == 4096
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "secret",
+        "credential",
+        "credentials",
+        "access_token",
+        "secretKey",
+        "refresh_token",
+        # not on either list: the substring rule still catches it, which is the
+        # fail-closed default the benign list must not weaken
+        "some_vendor_token",
+        "db_password_hash",
+    ],
+)
+def test_the_benign_list_does_not_weaken_the_denylist(field: str) -> None:
+    assert redact({field: "SK-CLEARTEXT"})[field] == "<redacted>"
+
+
+def test_no_name_is_on_both_lists() -> None:
+    """The invariant that makes the ordering moot in practice.
+
+    Kept separate from the ordering test below because it is the stronger
+    statement: if the sets never intersect, no entry added to the benign list
+    can shadow a denylisted one by accident.
+    """
+    from nebius_mcp import sanitize
+
+    overlap = sanitize._NORMALIZED_SENSITIVE_KEYS & sanitize._NORMALIZED_BENIGN_KEYS
+    assert not overlap, f"on both lists: {overlap}"
+
+
+def test_the_exact_denylist_outranks_the_benign_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ordering, actually exercised.
+
+    Asserting non-overlap alone does not pin the order — with disjoint sets,
+    swapping the two checks is unobservable, which mutation testing showed. So
+    force the overlap the real lists do not have, and assert the denylist still
+    wins. Reordering `_is_sensitive_key` fails this.
+    """
+    from nebius_mcp import sanitize
+
+    monkeypatch.setattr(
+        sanitize,
+        "_NORMALIZED_BENIGN_KEYS",
+        sanitize._NORMALIZED_BENIGN_KEYS | {sanitize._normalize_key("password")},
+    )
+
+    assert sanitize._is_sensitive_key("password") is True
+
+
+def test_the_benign_list_holds_no_patterns() -> None:
+    """Every entry is an exact name. A pattern here is how a real credential
+    eventually gets exempted by a rule nobody re-read.
+    """
+    from nebius_mcp import sanitize
+
+    assert all(not any(c in name for c in "*?[") for name in sanitize._BENIGN_KEYS), (
+        "benign list must contain exact names, never patterns"
+    )

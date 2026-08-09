@@ -172,8 +172,11 @@ def get_sdk() -> SDK:
     config file), which is the setup the ``nebius`` CLI produces and the one
     most users have.
 
-    ``Config`` implements the whole precedence itself, including the env token,
-    so this single path covers all three documented sources.
+    ``Config`` implements rules 2 and 3, but *not* rule 1 on its own: its
+    constructor raises ``FileNotFoundError`` when the config file is missing,
+    before any env bearer is consulted. So a token-only environment — the
+    documented Docker and CI path — is handled separately below rather than
+    routed through ``Config``. See R-017.
     """
     global _sdk_instance
     cached = _sdk_instance
@@ -201,6 +204,25 @@ def get_sdk() -> SDK:
         from nebius.aio.cli_config import Config  # heavy import, kept lazy
         from nebius.sdk import SDK as _SDK
 
+        def _env_token_sdk() -> SDK:
+            """Build against ``NEBIUS_IAM_TOKEN`` alone, with no config file.
+
+            A bare ``SDK()`` resolves ``EnvBearer`` from the environment, which
+            is precedence rule 1 exactly. It is the *only* way to honour that
+            rule: ``Config.__init__`` eagerly calls ``_get_profile()``, whose
+            first statement raises ``FileNotFoundError`` when the config file is
+            absent — before any env bearer is consulted. Routing a token-only
+            setup through ``Config`` therefore failed with advice to set the
+            variable the caller had already set, which is the whole of R-017.
+            """
+            return _SDK(federation_invitation_no_browser_open=True)
+
+        # Rule 1 needs no config file. Check this before touching Config at all,
+        # because Config cannot be constructed without one.
+        if snapshot.iam_token_env and not snapshot.config_file_exists:
+            _sdk_instance = _env_token_sdk()
+            return _sdk_instance
+
         try:
             _sdk_instance = _SDK(
                 config_reader=Config(
@@ -215,6 +237,14 @@ def get_sdk() -> SDK:
                 federation_invitation_no_browser_open=True,
             )
         except Exception as exc:  # ConfigError and friends
+            # A file that exists but cannot be read is still not a reason to
+            # refuse a caller who supplied a token: rule 1 outranks rules 2
+            # and 3, so a malformed or unreadable config must not be able to
+            # veto it. Only report the config failure when the token is absent
+            # and there is genuinely nothing left to try.
+            if snapshot.iam_token_env:
+                _sdk_instance = _env_token_sdk()
+                return _sdk_instance
             raise AuthError(
                 f"Could not build a Nebius client from {snapshot.config_file_path}: {exc}. "
                 "Run `nebius iam login` to refresh the profile, or set NEBIUS_IAM_TOKEN."
@@ -223,10 +253,27 @@ def get_sdk() -> SDK:
 
 
 def reset_sdk() -> None:
-    """Drop the cached SDK. Intended for tests."""
+    """Drop the cached SDK, and everything bound to it.
+
+    ``client._clients`` memoises service stubs constructed against whatever
+    ``get_sdk()`` returned. Dropping the SDK without dropping those leaves the
+    next ``service()`` call returning a stub that holds the discarded channel,
+    while ``get_sdk()`` builds a fresh SDK nobody uses.
+
+    That is latent today — the stdio server builds once and never resets — and
+    stops being latent the moment anything re-resolves credentials at runtime,
+    which a refresh after the documented 12-hour token expiry would. Enforcing
+    the invariant here means no future caller has to remember it.
+
+    The import is local because ``client`` imports this module; at module scope
+    it would be a cycle.
+    """
+    from .client import reset_clients
+
     global _sdk_instance
     with _sdk_lock:
         _sdk_instance = None
+    reset_clients()
 
 
 def _no_credentials_message(snapshot: CredentialResolution) -> str:
