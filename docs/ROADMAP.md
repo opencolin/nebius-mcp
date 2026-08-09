@@ -85,6 +85,13 @@ more, or depends on infrastructure that does not exist yet.
 Verified by running the code in the working tree on 2026-08-08, not by reading
 documentation.
 
+This is a dated snapshot of the tree the plan was written against, kept as the
+record of *why* each release was scoped the way it was. Some of it has since
+been fixed by the releases below and by the entries in
+[REVIEW-FINDINGS.md](REVIEW-FINDINGS.md). Where a bullet is no longer true it
+is struck through with a pointer, rather than deleted — the original
+observation is what justifies the plan item.
+
 - `_build_app()` registers exactly **57 tools**. `manifest_summary()` returns
   sha256 `4282464cd0f99a17bba2cc7223379865dbbf834c0ee758df90b44e99765257e5`.
 - `catalog.RESOURCES` holds **59** entries deriving **305** operations. Verb
@@ -113,15 +120,25 @@ documentation.
   which is not registered.
 - `grep '@app.resource\|@app.prompt' src/` returns nothing. `grep 'httpx\|tokenfactory'`
   over `src/` and `pyproject.toml` returns nothing.
-- `sanitize.py` matches 13 exact key names and 4 substrings, lowercasing but
-  not stripping underscores, so `secretKey` and `accessKeySecret` pass through.
-  Its module docstring claims "We also cap response sizes"; no size cap exists
-  in the file.
-- `errors.to_tool_error` collapses every failure to
+- ~~`sanitize.py` matches 13 exact key names and 4 substrings, lowercasing but
+  not stripping underscores, so `secretKey` and `accessKeySecret` pass
+  through. Its module docstring claims "We also cap response sizes"; no size
+  cap exists in the file.~~ Key names are now normalized (case and separators
+  both folded), so `secretKey` and `accessKeySecret` are redacted; the retracted
+  size-cap sentence is gone from the docstring. The counts have moved to 19
+  exact names and 5 substrings, plus a benign-name exemption list. See v0.2.0
+  item 5, and R-019, R-012 and R-013. A response size cap is still not
+  implemented — that part remains open, as v0.4.0 item 10.
+- ~~`errors.to_tool_error` collapses every failure to
   `NebiusAPIError (<ClassName>): <str(exc)>` and does not pass the message
-  through `sanitize.redact`.
-- `audit.log_call` records `sha256(args)[:16]` and writes `str(exc)[:200]`
-  unredacted.
+  through `sanitize.redact`.~~ It now routes the detail through
+  `sanitize.redact_text` and frames it with the data preamble. See v0.2.0
+  item 6. The taxonomy half — error codes and retryability — is still open as
+  v0.3.0 item 5.
+- ~~`audit.log_call` records `sha256(args)[:16]` and writes `str(exc)[:200]`
+  unredacted.~~ The error text is redacted before it is truncated, in that
+  order deliberately. The argument hash is unchanged and is still the gap
+  `SECURITY.md` records under Known gaps; widening it is v0.4.0 item 10.
 - `client.service()`, `auth.get_sdk()` and `confirm._active` are all
   process-global.
 - The working tree carries uncommitted changes adding `--version` and
@@ -222,7 +239,7 @@ Full plan: [plans/v0.4.0.md](plans/v0.4.0.md)
 | 7 | Retryable call path | M | `errors.safe_call(factory, *, idempotent, timeout)` replaces `safe`; `grep 'await safe(' src/` returns zero, down from 46; retries only on transient codes and only when `idempotent=True`; create, delete and action verbs make exactly one attempt. |
 | 8 | Idempotency keys on every mutation | S | A deterministic key derived from tool name, canonical arguments and confirm token is set on every create, delete and lifecycle request; a live test issues the same create twice and asserts exactly one resource exists afterwards. |
 | 9 | Rate budget and pagination correctness | M | A token bucket caps requests per second and in-flight calls; an unsupported `page_token` or `filter` raises naming the resource type instead of being silently dropped; a test enumerates every list-capable resource and asserts its response exposes both `items` and `next_page_token`. |
-| 10 | Correlatable, redacted, size-bounded observability | M | Audit records gain `request_id`, `trace_id`, `duration_ms`, `error_code`, `resource_id`, `result_bytes` and `decision`; `NEBIUS_MCP_AUDIT_ARGS` defaults to redacted rather than hashed; `sanitize.wrap` enforces a response byte cap with a `truncated` flag, which its docstring already claims. |
+| 10 | Correlatable, redacted, size-bounded observability | M | Audit records gain `request_id`, `trace_id`, `duration_ms`, `error_code`, `resource_id` and `result_bytes`; `NEBIUS_MCP_AUDIT_ARGS` defaults to redacted rather than hashed; `sanitize.wrap` enforces a response byte cap with a `truncated` flag. (The `decision` field this item originally listed is partly delivered: `outcome` already distinguishes `previewed` from `ok` and `error` — see R-011 — so what remains is the policy decision from v0.3.0 item 7, not the preview/execute one. The byte cap is also no longer a docstring-truth fix: `wrap`'s docstring stopped claiming truncation when the retracted claims were removed in v0.2.0, so this is now a plain feature addition.) |
 | 11 | SDK contract suite and a nightly dependency canary | M | A golden verb histogram pins the 305-operation total and fails on drift; a matrix job runs the contract suite against the lowest and highest allowed `nebius`; a nightly `uv lock --upgrade` run opens an issue on failure. |
 
 **Done when.** `pytest tests/integration` passes against a live tenant in CI on
