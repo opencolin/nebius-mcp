@@ -95,8 +95,13 @@ def resolve_credentials(
 
             with cfg_path.open("r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
-            active_profile = profile_env or cfg.get("default") or cfg.get("current-profile")
             profiles = cfg.get("profiles") or {}
+            active_profile = profile_env or cfg.get("default") or cfg.get("current-profile")
+            if not active_profile and len(profiles) == 1:
+                # `Config._get_profile` auto-selects when there is exactly one
+                # profile and no `default:` key. Not mirroring that reported a
+                # working single-profile config as having "no default profile".
+                active_profile = next(iter(profiles))
             if active_profile and active_profile in profiles:
                 p = profiles[active_profile] or {}
                 parent_id = p.get("parent-id") or None
@@ -133,7 +138,7 @@ def _profile_problem(profile: Mapping[str, object]) -> str | None:
     # and builds a ``FileBearer`` from it, so a profile carrying one needs no
     # other key — and its auth-type fields, if any, are never read. Checking
     # those first would report a working profile as broken.
-    if profile.get("token-file"):
+    if "token-file" in profile:
         return None
 
     auth_type = str(profile.get("auth-type") or "").strip().lower()
@@ -172,14 +177,29 @@ def _profile_problem(profile: Mapping[str, object]) -> str | None:
 
     # The CLI has written this key both ways over time; accept either spelling.
     if auth_type in {"service account", "service-account"}:
-        missing = [
-            key
-            for key in ("service-account-id", "public-key-id", "private-key-file-path")
-            if not profile.get(key)
-        ]
-        if missing:
-            return f"auth-type is '{auth_type}' but the profile is missing: {', '.join(missing)}."
-        return None
+        # `Config.get_credentials` accepts THREE service-account shapes, not one.
+        # Requiring the keypair triple rejected two of them outright — a working
+        # setup reported broken, which is the R-016 failure mode and the reason
+        # this now enumerates what the SDK reads rather than what one profile
+        # happened to look like.
+        if "service-account-credentials-file-path" in profile:
+            return None  # whole credentials file; no other key is consulted
+        if (
+            profile.get("service-account-id")
+            and "federated-subject-credentials-file-path" in profile
+        ):
+            return None  # federated subject credentials
+        has_key = "private-key-file-path" in profile or "private-key" in profile
+        if profile.get("service-account-id") and profile.get("public-key-id") and has_key:
+            return None  # keypair, file-backed or inline
+
+        return (
+            f"auth-type is '{auth_type}' but the profile matches none of the shapes the "
+            "SDK accepts: 'service-account-credentials-file-path' alone; or "
+            "'service-account-id' with 'federated-subject-credentials-file-path'; or "
+            "'service-account-id' with 'public-key-id' and one of 'private-key-file-path' "
+            "or 'private-key'."
+        )
 
     # Any other (i.e. unrecognised) auth-type is left to the SDK. Only flag what
     # has been confirmed to fail, so this never blocks a working setup.

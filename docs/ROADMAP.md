@@ -19,7 +19,7 @@ proposed an independent roadmap. This document merges them.
 | Lens | Core argument |
 |---|---|
 | Developer experience | Time to first successful tool call is currently infinite: `uvx nebius-mcp` 404s on PyPI. A 57-tool server nobody can install has a real-world tool-call count of zero. |
-| Platform coverage | 90 of 305 catalog operations are unreachable and Token Factory is 0% reachable. The server is an excellent inspection tool and a near-useless infrastructure tool. |
+| Platform coverage | 98 of 305 catalog operations are unreachable and Token Factory is 0% reachable. The server is an excellent inspection tool and a near-useless infrastructure tool. |
 | Security and trust | The project has the vocabulary of security without the mechanics. The confirm token is minted and consumed by the same party; `secrets_reveal_payload` is annotated identically to `ping`; redaction misses `cloud_init_user_data`. |
 | Adoption and ecosystem | Nothing is findable. PyPI 404, no git tags, no GitHub releases, zero results in the MCP registry. Nothing in the first release should be a new tool. |
 | Reliability | The last two commits each fixed a bug that made the server completely unusable, and both shipped green. Nothing in this repository has ever made one authenticated call to Nebius. |
@@ -97,7 +97,7 @@ observation is what justifies the plan item.
 - `catalog.RESOURCES` holds **59** entries deriving **305** operations. Verb
   histogram: list 57, get 55, create 46, delete 46, update 40, get_by_name 33,
   undelete 5, start 4, stop 4, activate 3, deactivate 3, restart 2, cancel 2,
-  resume 1, upgrade 1, purge 1, issue 1, revoke 1. **215** are reachable
+  resume 1, upgrade 1, purge 1, issue 1, revoke 1. **207** are reachable
   through the generic tools; **90** are not.
 - `pytest tests/unit` collects and passes **92** tests in this working tree.
   `README.md:537` says "90 unit tests" and

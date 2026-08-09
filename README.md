@@ -430,8 +430,11 @@ through the six generic tools below.
 The SDK exposes 59 resource types and 305 operations. One tool per resource per
 verb would be ~300 tools, which measurably degrades tool selection in every MCP
 client. Six tools take a `resource_type` instead, covering **all 59 resource
-types and 215 of the 305 operations** — every read, delete, and lifecycle
-action.
+types and 207 of the 305 operations** — nearly every read, delete, and
+lifecycle action. Eight operations are advertised by the SDK but withheld,
+because they need parameters the generic shape cannot supply (a backup wants a
+cluster ID as well as its own; an access key wants a structured identity). The
+tools say so by name rather than failing at the API.
 
 | Tool | Purpose |
 |---|---|
@@ -456,7 +459,7 @@ security rules to a security group, access keys to a service account, secret
 versions to a secret. `nebius_list_resource_types` reports this per resource,
 and an empty list result says which parent it actually wanted.
 
-The remaining 90 operations are creates, updates, and key-issuing calls, left
+The remaining 98 operations are creates, updates, and key-issuing calls, left
 purpose-built deliberately: nested request bodies benefit from typed tools, and
 keeping `issue` and `get_secret_once` out of the generic layer is what keeps
 plaintext credentials behind the single tool annotated for it.

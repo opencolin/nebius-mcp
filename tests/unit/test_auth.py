@@ -444,3 +444,120 @@ def test_reset_sdk_also_drops_service_clients(monkeypatch: pytest.MonkeyPatch) -
     reset_sdk()
 
     assert client._clients == {}
+
+
+# (label, profile mapping, should_be_usable). Every "True" row is a shape the
+# installed SDK's `Config.get_credentials` accepts without raising ConfigError —
+# checked against it directly, not inferred. Rejecting any of them is the R-016
+# failure: a working setup reported broken.
+_PROFILE_SHAPES: list[tuple[str, dict[str, str], bool]] = [
+    (
+        "sa_credentials_file_alone",
+        {"auth-type": "service account", "service-account-credentials-file-path": "/x.json"},
+        True,
+    ),
+    (
+        "sa_federated_subject",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "federated-subject-credentials-file-path": "/f.json",
+        },
+        True,
+    ),
+    (
+        "sa_keypair_file",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "public-key-id": "pk1",
+            "private-key-file-path": "/k.pem",
+        },
+        True,
+    ),
+    (
+        "sa_keypair_inline",
+        {
+            "auth-type": "service account",
+            "service-account-id": "sa1",
+            "public-key-id": "pk1",
+            "private-key": "KEYDATA",
+        },
+        True,
+    ),
+    (
+        "sa_hyphen_spelling",
+        {"auth-type": "service-account", "service-account-credentials-file-path": "/x.json"},
+        True,
+    ),
+    ("token_file_empty_string", {"token-file": ""}, True),
+    ("federation_with_id", {"auth-type": "federation", "federation-id": "fed1"}, True),
+    ("unknown_auth_type", {"auth-type": "mystery", "service-account-id": "sa1"}, True),
+    ("sa_only_an_id", {"auth-type": "service account", "service-account-id": "sa1"}, False),
+    ("federation_without_id", {"auth-type": "federation", "parent-id": "project-x"}, False),
+    ("parent_id_only", {"parent-id": "project-x"}, False),
+    ("empty", {}, False),
+]
+
+
+@pytest.mark.parametrize(
+    ("profile", "usable"),
+    [(p, u) for _, p, u in _PROFILE_SHAPES],
+    ids=[name for name, _, _ in _PROFILE_SHAPES],
+)
+def test_profile_shapes_match_what_the_sdk_accepts(
+    tmp_path: Path, profile: dict[str, str], usable: bool
+) -> None:
+    """R-023: the check recognised one service-account shape out of three.
+
+    `Config.get_credentials` accepts a whole credentials file on its own, a
+    federated subject, or a keypair whose private key may be inline rather than
+    file-backed. Requiring the file-backed keypair triple hard-blocked two
+    documented setups — the same class as R-016, where a rule that fires on
+    correct input is worse than no rule because the model complies rather than
+    argues.
+    """
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"default": "p", "profiles": {"p": profile}}), encoding="utf-8")
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert (snap.profile_problem is None) is usable, snap.profile_problem
+
+
+def test_a_single_profile_without_a_default_key_is_used(tmp_path: Path) -> None:
+    """`Config._get_profile` auto-selects when there is exactly one profile and
+    no `default:`. Not mirroring that reported a working config as having "no
+    default profile is set", and `get_sdk` then refused to build."""
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        yaml.safe_dump({"profiles": {"only": {"auth-type": "federation", "federation-id": "f"}}}),
+        encoding="utf-8",
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.active_profile == "only"
+    assert snap.profile_problem is None
+    assert snap.has_any is True
+
+
+def test_two_profiles_without_a_default_key_is_still_a_problem(tmp_path: Path) -> None:
+    """The auto-selection is only safe because it is unambiguous. With two
+    profiles the SDK raises, so this must keep reporting it."""
+    import yaml
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        yaml.safe_dump({"profiles": {"a": {"token-file": "/t"}, "b": {"token-file": "/t"}}}),
+        encoding="utf-8",
+    )
+
+    snap = resolve_credentials(config_path=cfg, env={})
+
+    assert snap.has_any is False
+    assert snap.profile_problem is not None

@@ -171,6 +171,20 @@ _SENSITIVE_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\beyJ[A-Za-z0-9_-]{10,256}+\.[A-Za-z0-9_-]{10,8192}+\.[A-Za-z0-9_-]{0,8192}+"),
         "<redacted>",
     ),  # JWT
+    # An auth scheme is not the credential it introduces. The in-string
+    # assignment rule stops its value at whitespace, so `authorization: Bearer
+    # <token>` had the word "Bearer" redacted and the token returned — and that
+    # rule does not run on the success path at all, so this has to live here to
+    # cover both. Bounded and possessive for the reason above (R-021).
+    (
+        re.compile(
+            r"\b(authorization|proxy-authorization|x-api-key)"
+            r"([\"']\s*,\s*[\"']|[\"']?\s*[:=]\s*[\"']?)"
+            r"(?:bearer|basic|digest|negotiate|token)?\s*[^\s,;&)}\]\"']{1,4096}+",
+            re.IGNORECASE,
+        ),
+        r"\1\2<redacted>",
+    ),  # Authorization header, scheme and credential together
     (re.compile(r"\bne1[a-z0-9]{30,}\b"), "<redacted>"),  # Nebius-style token prefix (best-effort)
     # The END marker is optional so that a truncated block — a log tail, a
     # capped error string — is still redacted from the header onward.
