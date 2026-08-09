@@ -249,6 +249,32 @@ def test_presigned_url_credential_parameter_is_redacted() -> None:
     assert "X-Amz-Expires=900" in out
 
 
+def test_presigned_url_security_token_is_redacted() -> None:
+    """An STS session token authenticates arbitrary calls on its own.
+
+    Unlike the signature beside it, this one is a standalone credential, and it
+    reaches the model through the success path — inside an endpoint, a
+    description or a status string, none of which ``_is_sensitive_key`` looks
+    at. It is pinned separately from ``X-Amz-Signature`` because narrowing the
+    alternation to drop it would otherwise leave the suite green.
+    """
+    session_token = "FwoGZXIvYXdz" + "EBYaDEXAMPLESESSIONTOKEN"
+    url = (
+        "https://storage.eu-north1.nebius.cloud/my-bucket/logs/run-42.json"
+        "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        f"&X-Amz-Security-Token={session_token}"
+        "&X-Amz-Signature=abcdef0123456789"
+    )
+
+    out = redact({"endpoint": url})["endpoint"]
+
+    assert session_token not in out
+    assert "X-Amz-Security-Token=<redacted>" in out
+    # The bucket and object path stay readable, for the same reason the
+    # signature rule keeps them: a storage failure has to remain diagnosable.
+    assert "my-bucket/logs/run-42.json" in out
+
+
 def test_individually_required_exact_keys_match() -> None:
     """Each of these was removable without failing a test.
 
