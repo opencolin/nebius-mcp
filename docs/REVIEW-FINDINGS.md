@@ -43,24 +43,6 @@ git URL stays the only install path.
 **Found by:** querying the PyPI JSON API for the name the README tells people
 to install.
 
-### R-007 — Two validators are written but never called
-
-**Severity:** low, but the README asserted them as features.
-
-`validation.py` defines `validate_id` and `validate_static_ip_cidr`. Neither
-is referenced by any tool — only by their own unit tests. The README claimed
-`/32` suffix and resource-ID format checking among the guard rails; that
-claim has been corrected to describe only what is enforced
-(`validate_disk_type`, `validate_boot_disk_size`).
-
-Wiring `validate_id` broadly is not obviously safe: the patterns in
-`_ID_PATTERNS` are inferred rather than documented, so a stricter-than-reality
-pattern would reject valid IDs and break working setups. Decide deliberately —
-either confirm the formats against the API and wire them in, or delete them.
-
-**Found by:** grepping for references to every public helper, rather than
-assuming exported functions are used.
-
 ### R-008 — Generic list returned nothing for three resource types
 
 **Severity:** high. Silently wrong results.
@@ -322,6 +304,86 @@ attempts passed their own suites, ruff, and mypy strict, and attempt 2's suite
 included a linearity test that its own blowup shape evaded.
 
 ## Fixed
+
+### R-016 — The boot-disk rule rejected every non-CUDA instance under 50 GiB
+
+**Severity:** medium. A validation rule that fires on correct input, which is
+worse than no rule: the model complies rather than argues, so the mistake ships
+silently and permanently.
+
+`validate_boot_disk_size` accepted an `image_family` argument and then used it
+only inside the error string:
+
+    def validate_boot_disk_size(size_bytes, image_family=None):
+        if size_bytes < MIN_BOOT_DISK_BYTES:      # 50 GiB, unconditional
+            ...f" for image_family={image_family!r}" if image_family else ""
+
+The 50 GiB figure is the documented minimum for the CUDA image families, which
+carry a driver stack the smaller default does not fit. It is not a general
+minimum. Applied unconditionally it refused a legitimate 20 GiB plain-Ubuntu
+boot disk — and refused it twice, because `compute_create_instance` independently
+carried `ge=50` on `boot_disk_size_gib`, so the request never reached the
+validator at all.
+
+The module docstring said "Generic check applies always", so the behaviour was
+intentional as written. What made it a defect is that the parameter, the error
+message, and the README all describe a rule conditioned on the image family
+("50 GiB minimum boot disks for CUDA images"). Only the code disagreed.
+
+**Fix:** the floor applies when the image family names CUDA, and not otherwise.
+The schema constraint drops to `ge=1`.
+
+No floor was invented for the non-CUDA case. A 10 GiB figure appears in the
+skill's reference table but is not independently verified, and replacing one
+unverified constant with two would repeat the original mistake. Where no
+documented bound exists, Nebius is the authority: an undersized disk returns an
+API error naming the real minimum, which is loud and recoverable, unlike a local
+refusal that is neither.
+
+The CUDA test is a substring match on a free-form string, which this module
+otherwise now avoids. It is safe only because of which way it fails — a false
+positive asks for 50 GiB on an image that may not need it, which is precisely
+the old behaviour and so no worse; a false negative defers to Nebius. Neither
+direction can reject something Nebius would have accepted.
+
+**Found by:** an external review noting that `validation.py` held helpers that
+were not broadly called. Checking which ones were wired surfaced the opposite
+problem in the two that were — the rule was running, and running wrong. The
+existing tests could not catch it: every one asserted a *rejection*, and none
+asserted that a correct request is accepted. That asymmetry is the general
+lesson, and `test_non_cuda_images_have_no_floor` is the guard.
+
+### R-007 — Two validators are written but never called
+
+**Severity:** low, but the README asserted them as features.
+
+`validation.py` defines `validate_id` and `validate_static_ip_cidr`. Neither
+is referenced by any tool — only by their own unit tests. The README claimed
+`/32` suffix and resource-ID format checking among the guard rails; that
+claim has been corrected to describe only what is enforced
+(`validate_disk_type`, `validate_boot_disk_size`).
+
+Wiring `validate_id` broadly is not obviously safe: the patterns in
+`_ID_PATTERNS` are inferred rather than documented, so a stricter-than-reality
+pattern would reject valid IDs and break working setups. Decide deliberately —
+either confirm the formats against the API and wire them in, or delete them.
+
+**Found by:** grepping for references to every public helper, rather than
+assuming exported functions are used.
+
+**Resolution: deleted, not wired.** `_ID_PATTERNS` encoded seven ID grammars
+inferred from observation rather than from documentation, and the entry above
+warned that enforcing them could reject valid IDs. That warning was correct and
+was not hypothetical — the sibling rule in the same module had already shipped
+exactly that failure, recorded as R-016. `validate_static_ip_cidr` went the same
+way for a simpler reason: there is no static-IP input anywhere in the tool
+surface to wire it to, since the VPC tools are read and delete only.
+
+`tests/unit/test_validation.py::test_every_public_validator_has_a_call_site`
+now walks `validation.py` for public functions and fails if any is unreachable
+from `src/`, so a rule cannot sit here looking enforced again. Mutation-checked:
+adding an uncalled public validator fails that test.
+
 
 ### R-010 — Operation summaries reach the model unredacted
 

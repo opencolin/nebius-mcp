@@ -100,9 +100,11 @@ security rules to a security group, access keys to a service account. This is
 encoded per resource in `catalog.RESOURCES` and is the most common source of
 confusing empty results.
 
-**Two validators are dead.** `validate_id` and `validate_static_ip_cidr` are
-never called. Do not wire them in casually — the ID patterns are inferred, not
-documented, so a too-strict pattern would reject valid IDs. See R-007.
+**Two validators were dead, and are now deleted** rather than wired: the ID
+patterns were inferred rather than documented, so enforcing them risked
+rejecting valid IDs. That risk was not hypothetical — the sibling rule in the
+same file had already shipped it (R-016). A test now asserts every public
+validator in `validation.py` is reachable from `src/`. See R-007.
 
 ## Quality gates
 

@@ -104,8 +104,9 @@ documentation.
   running ruff, ruff format, `mypy src`, `pytest tests/unit -v`, and
   `scripts/check_docs_links.py`, plus a gitleaks `security-scan` job. No
   release workflow, no dependency audit, no SBOM, no signing.
-- `validation.validate_id` and `validation.validate_static_ip_cidr` have no
-  call sites outside `src/nebius_mcp/validation.py`.
+- ~~`validation.validate_id` and `validation.validate_static_ip_cidr` have no
+  call sites.~~ Both deleted; a test now asserts every public validator is
+  reachable from `src/`. See R-007.
 - `src/nebius_mcp/tools/k8s.py:167` names `k8s_create_cluster`, which is not
   registered, and that string is inside the hashed manifest.
   `src/nebius_mcp/tools/secrets.py:6` names `secrets_get_payload_metadata`,

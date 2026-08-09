@@ -567,7 +567,19 @@ def register(app: FastMCP) -> None:
         ] = None,
         boot_disk_size_gib: Annotated[
             int,
-            Field(description="Boot disk size in GiB (>= 50).", default=50, ge=50),
+            # ge=1, not ge=50. The 50 GiB floor belongs to the CUDA image
+            # families and is enforced in validation.py where the image family
+            # is known; carrying it in the schema refused legitimate small
+            # CPU-only instances before the tool body could ever look. The
+            # default stays 50 because the CUDA families are the common case.
+            Field(
+                description=(
+                    "Boot disk size in GiB. The CUDA image families need at least 50; "
+                    "other images have no floor beyond what Nebius enforces."
+                ),
+                default=50,
+                ge=1,
+            ),
         ] = 50,
         boot_disk_type: Annotated[
             str,
