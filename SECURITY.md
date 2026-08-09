@@ -53,13 +53,13 @@ It does not trust:
 
 | Threat | Status | Enforcing code | What that actually buys you |
 |---|---|---|---|
-| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:65`, `src/nebius_mcp/sanitize.py:131` | Every tool result is wrapped in an envelope telling the model the content is data, not instructions. This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
+| Indirect prompt injection through cloud metadata | Partial | `src/nebius_mcp/sanitize.py:114`, `src/nebius_mcp/sanitize.py:210` | Every tool result carrying Nebius API content is wrapped in an envelope telling the model the content is data, not instructions. (Three tools return an unwrapped value today — `ping`, `check_environment`, `get_manifest` — and none of them touches the Nebius API.) This is advice to a model, not enforcement. It raises the cost of an attack; it does not make one impossible, and nothing measures how often it works. |
 | Accidental destruction by the model | Partial | `src/nebius_mcp/confirm.py:113`, `src/nebius_mcp/confirm.py:41` | A delete refuses on the first call and returns a preview plus a single-use token bound to the exact arguments, valid 120 seconds. It stops a single mis-aimed call and puts the target in the transcript before anything happens. It is **not** an injection defense: the token goes to the model, the model replays it, and no human is required — `tests/unit/test_destructive_flow.py:98` mints and consumes one in two back-to-back calls. |
-| Tool poisoning and rug pull | Partial | `src/nebius_mcp/manifest.py:49`, `src/nebius_mcp/tools/ops.py:160` | `get_manifest` returns a SHA-256 over every tool name, description, annotation and input schema, so a changed tool surface is detectable between sessions. Detection only, and only if you record the hash out of band and compare it. A server that is already hostile can return any hash it likes. |
+| Tool poisoning and rug pull | Partial | `src/nebius_mcp/manifest.py:49`, `src/nebius_mcp/tools/ops.py:174` | `get_manifest` returns a SHA-256 over every tool name, description, annotation and input schema, so a changed tool surface is detectable between sessions. Detection only, and only if you record the hash out of band and compare it. A server that is already hostile can return any hash it likes. |
 | Credential blast radius | **Not mitigated** | `src/nebius_mcp/server.py:54`, `src/nebius_mcp/confirm.py:104` | The server acts with the full permissions of whatever token or profile it resolved, and never narrows them. Write mode is one global boolean — see below. |
-| Secret exfiltration | Partial | `src/nebius_mcp/sanitize.py:26`, `src/nebius_mcp/tools/secrets.py:133` | Known-sensitive field names and token-shaped values are redacted recursively from every response that goes through the sanitizer. This is a denylist: a field the list does not name is returned verbatim. `secrets_reveal_payload` returns plaintext by design and is exempt. |
-| Audit tampering | **Not mitigated** | `src/nebius_mcp/audit.py:56`, `src/nebius_mcp/audit.py:45` | Every tool call is logged as JSON to the server's own stderr: tool name, a truncated SHA-256 of the arguments, mode, outcome. There is no integrity protection, no sequence numbering and no remote sink, so anyone who can run the server can drop or forge lines. The log also records an argument *hash*, not the arguments, so it tells you a delete happened but not what was deleted. |
-| Supply-chain compromise | Partial | `.github/workflows/release.yml:94`, `.github/workflows/ci.yml:64` | Releases publish through PyPI Trusted Publishing (OIDC), so there is no long-lived API token in the repository to steal. gitleaks runs in CI and as a pre-commit hook. Against that: every GitHub Action is pinned to a mutable tag rather than a commit SHA, so a compromised tag executes in the release job; `uv.lock` binds CI only, and anyone installing from PyPI resolves dependencies freshly within the version ranges in `pyproject.toml`; and nothing in this repository verifies a published artifact after the fact. |
+| Secret exfiltration | Partial | `src/nebius_mcp/sanitize.py:184`, `src/nebius_mcp/sanitize.py:28`, `src/nebius_mcp/tools/secrets.py:234` | Known-sensitive field names and token-shaped values are redacted recursively from every response that goes through the sanitizer. This is a denylist: a field the list does not name is returned verbatim. Two API-sourced values do not go through it at all, and both are deliberate: `secrets_reveal_payload`'s plaintext, and every paginated list tool's `next_page_token` (whose own field name matches the denylist, so redacting it would replace every pagination cursor). The rule that catches a credential written *inside* a string runs on the error path only — see Known gaps. |
+| Audit tampering | **Not mitigated** | `src/nebius_mcp/audit.py:86`, `src/nebius_mcp/audit.py:57` | Every tool call is logged as JSON to the server's own stderr: tool name, a truncated SHA-256 of the arguments, mode, outcome. There is no integrity protection, no sequence numbering and no remote sink, so anyone who can run the server can drop or forge lines. The log also records an argument *hash*, not the arguments, so it tells you a delete tool was called but not what it targeted — nor, see R-011 under Known gaps, whether the call executed or only previewed. |
+| Supply-chain compromise | Partial | `.github/workflows/release.yml:94`, `.github/workflows/ci.yml:67` | Releases publish through PyPI Trusted Publishing (OIDC), so there is no long-lived API token in the repository to steal. gitleaks runs in CI and as a pre-commit hook. Against that: every GitHub Action is pinned to a mutable tag rather than a commit SHA, so a compromised tag executes in the release job; `uv.lock` binds CI only, and anyone installing from PyPI resolves dependencies freshly within the version ranges in `pyproject.toml`; and nothing in this repository verifies a published artifact after the fact. |
 
 ## Write mode is one boolean, with no scoping
 
@@ -97,21 +97,34 @@ project boundary.
 
 ## Known gaps, open as of this document
 
-These are tracked, not hidden. Each names the task that closes it.
+These are tracked, not hidden. Each names the review finding that carries the
+detail. Neither has a task that closes it yet, and naming one here would be
+inventing a schedule that does not exist.
 
-- **The error path does not go through the sanitizer.**
-  `src/nebius_mcp/errors.py:25` interpolates the raw exception into the message
-  returned to the model, and the audit log records the raw exception string.
-  An API error that echoes request metadata therefore bypasses redaction.
-  Closed by v0.2.0-T6.
-- **`secrets_reveal_payload` is annotated `readOnlyHint: true`.** A client
-  configured to auto-approve read-only tools will call it without prompting.
-  Closed by v0.2.0-T4.
-- **Redaction misses camelCase and several high-value keys.** Key matching
-  lowercases but does not strip underscores, so `secretKey` is not caught.
-  Closed by v0.2.0-T5.
+- **The in-string assignment rule runs on one path only.** The sanitizer has
+  two ways to catch a credential. Field names are matched wherever the payload
+  is a mapping. A secret written *inside* a string — `db_password=hunter2` in
+  an error message, a query string, a cloud-init fragment quoted into a
+  description — needs `_ASSIGNMENT_PATTERN`
+  (`src/nebius_mcp/sanitize.py:229`), and that rule runs only in `redact_text`,
+  which is the error path. `redact`, which every successful response goes
+  through, applies the value patterns and nothing else. So the same credential
+  is removed from a failure and returned from a success. Two attempts to close
+  this were reverted, both for damage that only benchmarking found; R-015
+  records what they cost. Tracked as R-012 in
+  [docs/REVIEW-FINDINGS.md](docs/REVIEW-FINDINGS.md), with the shapes no rule
+  names at all as R-013.
+- **The audit log cannot tell a previewed delete from an executed one.** Both
+  calls of the confirm two-step return without raising, so both are logged
+  `outcome: "ok"` (`src/nebius_mcp/audit.py:116`) — the first having deleted
+  nothing, the second having deleted the resource. Apart from the timestamp the
+  two records differ only in `args_hash`, which is opaque. Tracked as R-011 in
+  [docs/REVIEW-FINDINGS.md](docs/REVIEW-FINDINGS.md).
 
-See [docs/plans/v0.2.0.md](docs/plans/v0.2.0.md) for the full text of each.
+The three gaps this section listed until v0.2.0 — the unsanitized error path,
+`secrets_reveal_payload` annotated `readOnlyHint: true`, and key matching that
+missed `secretKey` — are closed. See tasks T6, T4 and T5 in
+[docs/plans/v0.2.0.md](docs/plans/v0.2.0.md).
 
 ## Out of scope
 

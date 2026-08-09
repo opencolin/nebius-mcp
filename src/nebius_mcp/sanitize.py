@@ -75,6 +75,13 @@ _SENSITIVE_SUBSTRINGS: tuple[str, ...] = (
 # an error message. The presigned-URL rule replaces only the parameter value,
 # because the bucket and object path are what make a storage failure
 # diagnosable and a presigned URL without its signature cannot be replayed.
+#
+# X-Amz-Security-Token is listed alongside Signature and Credential but is not
+# the same kind of thing: a signature is scoped to one request and useless once
+# replaced, whereas a security token is an STS session credential that
+# authenticates arbitrary calls on its own. It has to be named explicitly —
+# nothing else here recognises it, and the field it arrives in (an endpoint, a
+# description, an error string) is not one _is_sensitive_key would catch.
 _SENSITIVE_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{0,}"),
@@ -97,7 +104,7 @@ _SENSITIVE_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "<redacted>",
     ),
     (
-        re.compile(r"(X-Amz-(?:Signature|Credential))=[^&\s\"'<>]+", re.IGNORECASE),
+        re.compile(r"(X-Amz-(?:Signature|Credential|Security-Token))=[^&\s\"'<>]+", re.IGNORECASE),
         r"\1=<redacted>",
     ),
 )
@@ -175,7 +182,16 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def redact(payload: Any) -> Any:
-    """Recursively redact sensitive keys and token-like values in a JSON-able tree."""
+    """Recursively redact sensitive keys and token-like values in a JSON-able tree.
+
+    One API-sourced value deliberately never reaches here: ``next_page_token``.
+    Every list tool lifts it off the response into the envelope *after*
+    ``safe_proto`` has run, because its own field name matches the ``token``
+    substring rule above — routing it through would replace every pagination
+    cursor with ``<redacted>`` and silently break paging. It is an opaque
+    server-issued cursor rather than a credential, so the exclusion is safe, but
+    it is an exclusion and ``SECURITY.md`` names it as one.
+    """
     if isinstance(payload, dict):
         out: dict[str, Any] = {}
         for k, v in payload.items():
