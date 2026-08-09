@@ -70,6 +70,38 @@ _SENSITIVE_SUBSTRINGS: tuple[str, ...] = (
     "credential",
 )
 
+# Field names that contain one of the substrings above but hold no secret. The
+# substring rule is deliberately broad and that is right by default — but for a
+# usage counter or an expiry timestamp, "<redacted>" does not read as a withheld
+# value, it reads as data the account does not have, and the model acts on that.
+#
+# Every entry is an EXACT name, never a pattern. A pattern here is how a real
+# credential eventually gets exempted by a rule nobody re-read: `tokens_*` would
+# have covered a hypothetical `tokens_secret` too. The cost of the list being
+# incomplete is the status quo — one unreadable field — so it is safe to grow
+# only as concrete false positives are observed, and unsafe to grow by
+# guesswork. The exact denylist above still wins over anything listed here.
+#
+# `next_page_token` is deliberately absent: it never reaches `redact` at all
+# (see that function's docstring), and listing it here would imply it does.
+_BENIGN_KEYS: frozenset[str] = frozenset(
+    {
+        # Usage and quota counters, e.g. on AI endpoint statistics.
+        "tokens_used",
+        "tokens_remaining",
+        "token_count",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "max_tokens",
+        # Expiry metadata. The timestamp is not the credential.
+        "credentials_expire_at",
+        "token_expires_at",
+        "token_expiry",
+        "secret_version_count",
+    }
+)
+
 # Sensitive value patterns, each paired with its replacement. These catch
 # secrets that arrive inside an innocently named field — a description, a URL,
 # an error message. The presigned-URL rule replaces only the parameter value,
@@ -172,12 +204,21 @@ _NORMALIZED_SENSITIVE_KEYS: frozenset[str] = frozenset(_normalize_key(k) for k i
 _NORMALIZED_SENSITIVE_SUBSTRINGS: tuple[str, ...] = tuple(
     _normalize_key(s) for s in _SENSITIVE_SUBSTRINGS
 )
+_NORMALIZED_BENIGN_KEYS: frozenset[str] = frozenset(_normalize_key(k) for k in _BENIGN_KEYS)
 
 
 def _is_sensitive_key(key: str) -> bool:
+    """Whether a field name should have its value replaced.
+
+    Order matters. The exact denylist wins outright, so nothing on it can be
+    exempted by accident. Only then is the benign list consulted, and only then
+    the substring rule.
+    """
     normalized = _normalize_key(key)
     if normalized in _NORMALIZED_SENSITIVE_KEYS:
         return True
+    if normalized in _NORMALIZED_BENIGN_KEYS:
+        return False
     return any(s in normalized for s in _NORMALIZED_SENSITIVE_SUBSTRINGS)
 
 

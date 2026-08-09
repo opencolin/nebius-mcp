@@ -305,6 +305,117 @@ included a linearity test that its own blowup shape evaded.
 
 ## Fixed
 
+### R-017 — `NEBIUS_IAM_TOKEN` alone never worked
+
+**Severity:** high. The documented Docker and CI path failed on every call, and
+the tool built to diagnose exactly this reported green while it did.
+
+Precedence rule 1 says a bearer token stands on its own. It did not.
+`get_sdk()` unconditionally built `Config(config_file=...)`, and
+`Config.__init__` eagerly calls `_get_profile()`, whose first statement is a
+`FileNotFoundError` when the file is absent — before any env bearer is
+consulted. So a token-only environment raised:
+
+    AuthError: Could not build a Nebius client from ~/.nebius/config.yaml:
+    Config file ... not found. Run `nebius iam login`, or set NEBIUS_IAM_TOKEN.
+
+The last clause is the sharpest part: the remedy the error suggests is the thing
+the caller already did.
+
+`get_sdk`'s own docstring asserted the opposite — that `Config` "implements the
+whole precedence itself, including the env token, so this single path covers all
+three documented sources." That holds only when the file exists, which is the
+condition under which nobody would notice.
+
+Meanwhile `resolve_credentials()` returned `error: null, profile_problem: null`
+and `has_any: true`, because `has_any` short-circuits on `iam_token_env` — which
+is correct, and was correct all along. `check_environment` therefore reported
+`has_credentials: true` with no `next_steps` while every subsequent call failed.
+R-006 closed the inverse case (credentials reported that cannot authenticate);
+this was the mirror of it.
+
+**Fix:** when a token is present and no config file exists, build a bare `SDK()`,
+which resolves `EnvBearer` — rule 1 exactly. And if `Config` raises for any other
+reason while a token is present, fall back to the same path rather than erroring:
+rule 1 outranks rules 2 and 3, so a malformed config must not be able to veto it.
+
+**Why the suite missed it:** `test_get_sdk_prefers_env_token_over_broken_profile`
+writes a config containing a *broken profile* and asserts the token wins — but a
+profile has to exist in order to be broken, so the file was always there. Token
+plus no file at all was the untested case, and it is the one that shipped. The
+difference is a `ConfigError` raised after parsing versus a `FileNotFoundError`
+raised before it.
+
+Mutation testing found something further: the fix has two layers, and removing
+either one alone left the suite green. Both are now pinned independently — the
+fast path by asserting `Config` is never constructed at all.
+
+**Found by:** exercising each documented precedence rule against the installed
+SDK rather than reading the resolution code.
+
+### R-018 — `reset_sdk()` left service clients bound to the discarded SDK
+
+**Severity:** medium, latent. Live the moment anything re-resolves credentials.
+
+`reset_sdk()` cleared `auth._sdk_instance`; `client._clients` is a separate
+cache holding service stubs constructed against whatever `get_sdk()` returned,
+and nothing connected the two. After a lone `reset_sdk()` the next `service()`
+call returned a stub holding the discarded channel while `get_sdk()` built a
+fresh SDK nobody used.
+
+Latent because the tests that reset call both, and the stdio server builds once
+and never resets. It stops being latent as soon as anything re-resolves at
+runtime — a refresh after the documented 12-hour token expiry being the obvious
+case, and the one most likely to be added.
+
+**Fix:** `reset_sdk()` calls `reset_clients()`, so the invariant lives in one
+place instead of being remembered at every call site. The import is local
+because `client` imports `auth`; at module scope it would be a cycle.
+
+Also closed alongside it: `service()` had a check-then-set race on `_clients`.
+`_sdk_lock` guarded SDK construction but nothing guarded the dict, so two
+threads could each build a stub and one would silently win. `get_sdk()` is
+still called outside the new lock deliberately — it takes its own, and holding
+both in opposite orders elsewhere would deadlock.
+
+**Found by:** reading the two reset functions together and asking what the
+second one is for, rather than reading either alone.
+
+### R-019 — Key redaction swallowed benign neighbours
+
+**Severity:** low. No secret escapes; the failure is legibility, and it is
+silent.
+
+`_SENSITIVE_SUBSTRINGS` matches any field name *containing* `secret`, `token`,
+`password` or `credential`. That breadth is right as a default, and the module
+comment argues a false positive "costs one unreadable field" — true for a stray
+field, less true for a usage counter or an expiry timestamp:
+
+    {"name": "vm", "tokens_used": "<redacted>", "credentials_expire_at": "<redacted>"}
+
+`<redacted>` there does not read as a withheld value. It reads as data the
+account does not have, and the model acts on that.
+
+**Fix:** an exact-match benign list, consulted after the exact denylist and
+before the substring rule. Every entry is a literal name, never a pattern —
+`tokens_*` would have exempted a hypothetical `tokens_secret` too, and a
+pattern is how a real credential eventually slips through a rule nobody
+re-reads. The cost of the list being incomplete is the status quo, so it is
+safe to grow from observed false positives and unsafe to grow by guesswork.
+
+`next_page_token` is deliberately *not* on it: that value never reaches
+`redact` at all, and listing it here would imply it does.
+
+Mutation testing caught a weak guard here too. The first ordering test asserted
+only that the two sets do not overlap — which is the durable invariant, but
+with disjoint sets swapping the two checks is unobservable, so it did not
+actually pin the order. It now forces the overlap the real lists do not have
+and asserts the denylist still wins.
+
+**Found by:** an external review reading the rule against realistic AI-endpoint
+payloads rather than against the credential shapes it was written for.
+
+
 ### R-016 — The boot-disk rule rejected every non-CUDA instance under 50 GiB
 
 **Severity:** medium. A validation rule that fires on correct input, which is

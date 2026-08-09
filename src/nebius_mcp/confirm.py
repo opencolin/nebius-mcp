@@ -81,6 +81,15 @@ def _gc(now: float) -> None:
 
 
 def consume(tool: str, args: object, token: str) -> bool:
+    """Spend a ticket, returning whether it authorised this exact call.
+
+    The ticket is popped *before* ``tool`` and ``args_hash`` are compared, so a
+    mismatched replay burns the token and forces a fresh dry run rather than
+    letting the caller retry against the same one. That is deliberate for a
+    mistake guard: a token that survives being presented with the wrong
+    arguments is a token that can be brute-forced against, and re-previewing
+    costs one call. Do not "fix" this into validate-then-pop.
+    """
     now = time.time()
     args_hash = _hash_args(args)
     with _TICKET_LOCK:
